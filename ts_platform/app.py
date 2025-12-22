@@ -87,9 +87,13 @@ class CheckBoxList(QWidget):
 
         outer = QVBoxLayout()
         self.setLayout(outer)
+        # QFormLayout can collapse custom widgets; enforce a reasonable default height.
+        self.setMinimumHeight(220)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
+        self._scroll.setMinimumHeight(220)
+        self._scroll.setFrameShape(QFrame.NoFrame)
         outer.addWidget(self._scroll, 1)
 
         inner = QWidget()
@@ -1017,6 +1021,25 @@ class MainWindow(QMainWindow):
 def main() -> int:
     app = QApplication(sys.argv)
     apply_stylesheet(app, theme="light_blue.xml")
+    # qt-material themes can make checkbox indicators hard to see depending on palette;
+    # force a readable checkbox style.
+    app.setStyleSheet(
+        app.styleSheet()
+        + """
+QCheckBox { color: #1f1f1f; }
+QCheckBox::indicator {
+  width: 18px;
+  height: 18px;
+  border: 1px solid #5a5a5a;
+  border-radius: 3px;
+  background: #ffffff;
+}
+QCheckBox::indicator:checked {
+  background: #2979ff;
+  border: 1px solid #2979ff;
+}
+"""
+    )
     w = MainWindow()
     w.show()
     return app.exec_()
