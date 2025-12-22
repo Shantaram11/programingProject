@@ -137,6 +137,9 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
     if clean.outlier_method == "clip_quantile":
         work = _clip_outliers(work, q_low=clean.clip_q_low, q_high=clean.clip_q_high)
 
+    # Ensure no NaNs remain in used columns (prevents NA/NaN predictions, esp. DeepAR)
+    work = work.dropna(axis=0)
+
     # Ensure we still have enough data
     n = len(work)
     if n < max(20, feat.lag_window + feat.horizon + 5):
@@ -252,9 +255,10 @@ def _handle_missing(df: pd.DataFrame, method: str) -> pd.DataFrame:
     if method == "drop_rows":
         return df.dropna(axis=0)
     if method == "ffill":
-        return df.ffill()
+        # ffill alone can leave leading NaNs; always fill both directions
+        return df.ffill().bfill()
     if method == "bfill":
-        return df.bfill()
+        return df.bfill().ffill()
     if method == "interpolate_linear":
         return df.interpolate(method="linear").ffill().bfill()
     raise ValueError(f"Unknown missing_method: {method}")
@@ -586,6 +590,10 @@ def _predict_deepar_torch(
 
     y = np.asarray(y_train, dtype=float)
     X = np.asarray(X_train, dtype=float) if X_train is not None else None
+    if not np.isfinite(y).all():
+        raise ValueError("DeepAR received NaN/Inf in y_train after cleaning. Try a different missing-value method.")
+    if X is not None and (not np.isfinite(X).all()):
+        raise ValueError("DeepAR received NaN/Inf in feature matrix after cleaning. Try a different missing-value method.")
     n_exog = int(X.shape[1]) if X is not None else 0
     input_size = 1 + n_exog
 
@@ -644,7 +652,10 @@ def _predict_deepar_torch(
             opt.zero_grad(set_to_none=True)
             pred = model(xb)
             loss = loss_fn(pred, yb)
+            if not torch.isfinite(loss):
+                raise RuntimeError("DeepAR training became NaN/Inf. Try lower learning_rate or enable scaling.")
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
             total += float(loss.item()) * len(b)
             count += len(b)

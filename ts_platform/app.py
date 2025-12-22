@@ -77,6 +77,52 @@ class MplCanvas(FigureCanvas):
         self.setParent(parent)
 
 
+class CheckBoxList(QWidget):
+    """A scrollable list of explicit QCheckBox widgets (qt-material friendly)."""
+
+    def __init__(self, checked_by_default: bool = False, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._checked_by_default = checked_by_default
+        self._boxes: Dict[str, QCheckBox] = {}
+
+        outer = QVBoxLayout()
+        self.setLayout(outer)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        outer.addWidget(self._scroll, 1)
+
+        inner = QWidget()
+        self._v = QVBoxLayout()
+        inner.setLayout(self._v)
+        self._scroll.setWidget(inner)
+
+        self._v.addStretch(1)
+
+    def set_items(self, items: List[str]) -> None:
+        # clear existing
+        self._boxes.clear()
+        while self._v.count():
+            it = self._v.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+
+        for name in items:
+            cb = QCheckBox(name)
+            cb.setChecked(self._checked_by_default)
+            self._v.addWidget(cb)
+            self._boxes[name] = cb
+        self._v.addStretch(1)
+
+    def checked_items(self) -> List[str]:
+        return [k for k, cb in self._boxes.items() if cb.isChecked()]
+
+    def set_checked(self, name: str, checked: bool) -> None:
+        if name in self._boxes:
+            self._boxes[name].setChecked(checked)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -175,15 +221,14 @@ class MainWindow(QMainWindow):
         self.sort_time_chk.setToolTip("Default: on.")
         form.addRow(QLabel(""), self.sort_time_chk)
 
-        self.targets_list = QListWidget()
-        self.targets_list.setSelectionMode(QListWidget.NoSelection)
-        self.targets_list.setToolTip("Target variables to predict. Default: none selected.")
-        form.addRow(QLabel("Targets (multi-select)"), self.targets_list)
+        # replaced by explicit checkbox list to ensure visibility under qt-material
+        self.targets_checks = CheckBoxList(checked_by_default=False)
+        self.targets_checks.setToolTip("Target variables to predict. Default: none selected.")
+        form.addRow(QLabel("Targets (multi-select)"), self.targets_checks)
 
-        self.features_list = QListWidget()
-        self.features_list.setSelectionMode(QListWidget.NoSelection)
-        self.features_list.setToolTip("Optional feature columns. Default: all numeric (excluding targets).")
-        form.addRow(QLabel("Features (multi-select)"), self.features_list)
+        self.features_checks = CheckBoxList(checked_by_default=True)
+        self.features_checks.setToolTip("Optional feature columns. Default: all numeric (excluding targets).")
+        form.addRow(QLabel("Features (multi-select)"), self.features_checks)
 
         group2 = QGroupBox("Train/Test & Horizon")
         form2 = QFormLayout()
@@ -262,32 +307,15 @@ class MainWindow(QMainWindow):
     def _populate_column_selectors(self) -> None:
         assert self.df is not None
         self.time_col_combo.clear()
-        self.targets_list.clear()
-        self.features_list.clear()
+        self.targets_checks.set_items([])
+        self.features_checks.set_items([])
 
         cols = list(self.df.columns)
         self.time_col_combo.addItems([str(c) for c in cols])
 
         numeric_cols = [c for c in cols if pd.api.types.is_numeric_dtype(self.df[c])]
-        for c in numeric_cols:
-            it = QListWidgetItem(str(c))
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Unchecked)
-            self.targets_list.addItem(it)
-
-        for c in numeric_cols:
-            it = QListWidgetItem(str(c))
-            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            it.setCheckState(Qt.Checked)  # default: all numeric are features
-            self.features_list.addItem(it)
-
-    def _checked_items(self, w: QListWidget) -> List[str]:
-        out: List[str] = []
-        for i in range(w.count()):
-            it = w.item(i)
-            if it.checkState() == Qt.Checked:
-                out.append(it.text())
-        return out
+        self.targets_checks.set_items([str(c) for c in numeric_cols])
+        self.features_checks.set_items([str(c) for c in numeric_cols])
 
     # -------------------------
     # Tab 2: Cleaning
@@ -427,13 +455,17 @@ class MainWindow(QMainWindow):
 
     def _add_model_group_common(self, title: str, key: str, enabled_default: bool) -> QGroupBox:
         box = QGroupBox(title)
-        box.setCheckable(True)
-        box.setChecked(enabled_default)
-        box.setToolTip("Toggle to include/exclude this model.")
+        # Using an explicit checkbox because qt-material can hide the groupbox check indicator.
+        box.setToolTip("Model settings.")
         self.models_form.addWidget(box)
         form = QFormLayout()
         box.setLayout(form)
-        self.model_widgets[key] = {"box": box, "form": form, "availability": QLabel("")}
+        enabled = QCheckBox("Enable this model")
+        enabled.setChecked(enabled_default)
+        enabled.setToolTip("Include/exclude this model. Default shown by checkbox state.")
+        form.addRow(QLabel(""), enabled)
+
+        self.model_widgets[key] = {"box": box, "enabled": enabled, "form": form, "availability": QLabel("")}
         badge = self.model_widgets[key]["availability"]
         badge.setStyleSheet("opacity: 0.85;")
         form.addRow(QLabel("Availability"), badge)
@@ -670,11 +702,11 @@ class MainWindow(QMainWindow):
             raise ValueError("No dataset loaded. Go to 'Data' tab and load a file.")
 
         time_col = self.time_col_combo.currentText()
-        targets = self._checked_items(self.targets_list)
+        targets = self.targets_checks.checked_items()
         if not targets:
             raise ValueError("Please select at least 1 target variable.")
 
-        feats = self._checked_items(self.features_list)
+        feats = self.features_checks.checked_items()
         # By default features list is all numeric; remove targets to avoid leakage unless user explicitly keeps them.
         feats = [c for c in feats if c not in targets]
 
@@ -700,8 +732,8 @@ class MainWindow(QMainWindow):
 
         models: Dict[str, ModelConfig] = {}
         for key, w in self.model_widgets.items():
-            box: QGroupBox = w["box"]
-            if not box.isChecked():
+            enabled: QCheckBox = w["enabled"]
+            if not enabled.isChecked():
                 continue
             params: Dict[str, Any] = {}
             if key == "ma":
