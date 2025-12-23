@@ -509,7 +509,6 @@ class MainWindow(QMainWindow):
         btn_set_key.clicked.connect(self._set_openai_key_from_ui)
         key_row.addWidget(btn_set_key)
         self._openai_key_widgets = [self.openai_key_edit, btn_set_key]
-        self._on_openai_toggle(False)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -520,6 +519,8 @@ class MainWindow(QMainWindow):
             "- GPT training suggestions (if enabled)\n"
         )
         left_layout.addWidget(self.log, 1)
+        # Now safe (log exists)
+        self._on_openai_toggle(False)
 
         # Right: visualization
         right = QWidget()
@@ -947,7 +948,8 @@ class MainWindow(QMainWindow):
         for w in getattr(self, "_openai_key_widgets", []):
             w.setEnabled(bool(enabled))
         if not enabled:
-            self._append_log("OpenAI advisor disabled.")
+            if hasattr(self, "log"):
+                self._append_log("OpenAI advisor disabled.")
 
     def _reset_gpt_memory(self) -> None:
         self._gpt_messages = [
