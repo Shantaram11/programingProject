@@ -98,6 +98,19 @@ TARGET_TRANSFORM_ITEMS: List[tuple[str, str]] = [
     ("llog(1+x)", "log1p"),
 ]
 
+TIME_MODE_ITEMS: List[tuple[str, str]] = [
+    ("Single column (already datetime / timestamp)", "single"),
+    ("Combine multiple columns (build datetime)", "combine"),
+    ("Row order (no time columns; use row index)", "row_order"),
+]
+
+TIME_BUILD_STRATEGY_ITEMS: List[tuple[str, str]] = [
+    ("Date + Time (two columns)", "date_time"),
+    ("Year + Month + Day (3 columns)", "ymd"),
+    ("Year + Month + Day + Hour (4 columns)", "ymdh"),
+    ("Unix timestamp (one column)", "unix"),
+]
+
 
 def _now_run_id() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -279,9 +292,69 @@ class MainWindow(QMainWindow):
         group.setLayout(form)
         right_layout.addWidget(group)
 
+        self.time_mode_combo = NoWheelComboBox()
+        for label, code in TIME_MODE_ITEMS:
+            self.time_mode_combo.addItem(label, code)
+        # default: single
+        for i in range(self.time_mode_combo.count()):
+            if self.time_mode_combo.itemData(i) == "single":
+                self.time_mode_combo.setCurrentIndex(i)
+                break
+        self.time_mode_combo.currentIndexChanged.connect(self._on_time_mode_changed)
+        form.addRow(QLabel("Time mode"), self.time_mode_combo)
+
         self.time_col_combo = NoWheelComboBox()
         self.time_col_combo.setToolTip("Datetime column. Range: any datetime-like column.")
         form.addRow(QLabel("Time column"), self.time_col_combo)
+
+        # Time builder (for multi-column time)
+        self.time_builder_box = QGroupBox("Time builder (combine columns)")
+        tb_form = QFormLayout()
+        self.time_builder_box.setLayout(tb_form)
+        right_layout.addWidget(self.time_builder_box)
+
+        self.time_build_strategy = NoWheelComboBox()
+        for label, code in TIME_BUILD_STRATEGY_ITEMS:
+            self.time_build_strategy.addItem(label, code)
+        self.time_build_strategy.currentIndexChanged.connect(self._on_time_strategy_changed)
+        tb_form.addRow(QLabel("Strategy"), self.time_build_strategy)
+
+        # date+time
+        self.date_col_combo = NoWheelComboBox()
+        self.timepart_col_combo = NoWheelComboBox()
+        tb_form.addRow(QLabel("Date column"), self.date_col_combo)
+        tb_form.addRow(QLabel("Time column"), self.timepart_col_combo)
+        self.datetime_format_edit = QLineEdit()
+        self.datetime_format_edit.setPlaceholderText("Optional format, e.g. %Y-%m-%d %H:%M:%S (leave empty to auto-parse)")
+        tb_form.addRow(QLabel("Parse format"), self.datetime_format_edit)
+
+        # y/m/d(/h)
+        self.year_col_combo = NoWheelComboBox()
+        self.month_col_combo = NoWheelComboBox()
+        self.day_col_combo = NoWheelComboBox()
+        self.hour_col_combo = NoWheelComboBox()
+        tb_form.addRow(QLabel("Year"), self.year_col_combo)
+        tb_form.addRow(QLabel("Month"), self.month_col_combo)
+        tb_form.addRow(QLabel("Day"), self.day_col_combo)
+        tb_form.addRow(QLabel("Hour (optional)"), self.hour_col_combo)
+
+        # unix
+        self.unix_col_combo = NoWheelComboBox()
+        self.unix_unit_combo = NoWheelComboBox()
+        self.unix_unit_combo.addItems(["s", "ms"])
+        tb_form.addRow(QLabel("Unix column"), self.unix_col_combo)
+        tb_form.addRow(QLabel("Unix unit"), self.unix_unit_combo)
+
+        self.timezone_combo = NoWheelComboBox()
+        self.timezone_combo.addItems(["none", "UTC"])
+        tb_form.addRow(QLabel("Timezone"), self.timezone_combo)
+
+        btn_preview_time = QPushButton("Preview parsed time (first 10)")
+        btn_preview_time.clicked.connect(self._preview_parsed_time)
+        tb_form.addRow(QLabel(""), btn_preview_time)
+        self.time_preview_label = QLabel("")
+        self.time_preview_label.setWordWrap(True)
+        tb_form.addRow(QLabel("Preview"), self.time_preview_label)
 
         self.freq_combo = NoWheelComboBox()
         self.freq_combo.addItems(["auto", "D", "H", "T", "S", "W", "M"])
@@ -337,6 +410,9 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 1)
 
+        # Initial state
+        self._on_time_mode_changed()
+
     def _pick_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -380,6 +456,17 @@ class MainWindow(QMainWindow):
         self.time_col_combo.clear()
         self.targets_checks.set_items([])
         self.features_checks.set_items([])
+        # time-builder combos
+        for w in [
+            self.date_col_combo,
+            self.timepart_col_combo,
+            self.year_col_combo,
+            self.month_col_combo,
+            self.day_col_combo,
+            self.hour_col_combo,
+            self.unix_col_combo,
+        ]:
+            w.clear()
 
         # Ignore common "Unnamed: 0" index columns and blank column names.
         cols = [
@@ -388,10 +475,22 @@ class MainWindow(QMainWindow):
             if str(c).strip() != "" and not str(c).strip().lower().startswith("unnamed")
         ]
         self.time_col_combo.addItems([str(c) for c in cols])
+        for w in [
+            self.date_col_combo,
+            self.timepart_col_combo,
+            self.year_col_combo,
+            self.month_col_combo,
+            self.day_col_combo,
+            self.hour_col_combo,
+            self.unix_col_combo,
+        ]:
+            w.addItems([str(c) for c in cols])
 
         numeric_cols = [c for c in cols if pd.api.types.is_numeric_dtype(self.df[c])]
         self.targets_checks.set_items([str(c) for c in numeric_cols])
         self.features_checks.set_items([str(c) for c in numeric_cols])
+
+        self._on_time_strategy_changed()
 
     # -------------------------
     # Tab 2: Cleaning
@@ -840,7 +939,8 @@ class MainWindow(QMainWindow):
         if self.df is None:
             raise ValueError("No dataset loaded. Go to 'Data' tab and load a file.")
 
-        time_col = self.time_col_combo.currentText()
+        # time_col may be a generated internal column depending on time mode
+        time_col = self._get_time_col_name_for_config()
         targets = self.targets_checks.checked_items()
         if not targets:
             raise ValueError("Please select at least 1 target variable.")
@@ -915,6 +1015,16 @@ class MainWindow(QMainWindow):
 
         return PipelineConfig(cleaning=cleaning, features=features, models=models)
 
+    def _get_time_col_name_for_config(self) -> str:
+        mode = str(self.time_mode_combo.currentData() or "single")
+        if mode == "single":
+            return self.time_col_combo.currentText()
+        if mode == "row_order":
+            return "__ts__"
+        if mode == "combine":
+            return "__ts__"
+        return self.time_col_combo.currentText()
+
     def _train(self) -> None:
         try:
             cfg = self._collect_config()
@@ -925,7 +1035,8 @@ class MainWindow(QMainWindow):
         self._append_log(f"[{datetime.now().strftime('%H:%M:%S')}] Starting training…")
         try:
             assert self.df is not None
-            result = run_training(self.df, cfg, log_cb=self._append_log)
+            df_for_train = self._prepare_dataframe_for_training(self.df)
+            result = run_training(df_for_train, cfg, log_cb=self._append_log)
         except Exception as e:
             QMessageBox.critical(self, "Training failed", f"{e}\n\n{traceback.format_exc()}")
             self._append_log("Training failed. See error dialog.")
@@ -943,6 +1054,112 @@ class MainWindow(QMainWindow):
             "Done",
             f"Training completed for {len(result.models)} model(s) and {len(result.targets)} target(s).",
         )
+
+    def _prepare_dataframe_for_training(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Returns a dataframe that contains the time column required by cfg.features.time_col.
+        If user chose multi-column time, we construct __ts__.
+        """
+        mode = str(self.time_mode_combo.currentData() or "single")
+        if mode == "single":
+            return df
+
+        out = df.copy()
+        if mode == "row_order":
+            out["__ts__"] = pd.RangeIndex(start=0, stop=len(out), step=1)
+            return out
+
+        if mode != "combine":
+            return out
+
+        ts = self._build_time_series_from_columns(out)
+        out["__ts__"] = ts
+
+        # drop unparsed rows but report
+        bad = int(pd.isna(out["__ts__"]).sum())
+        if bad:
+            self._append_log(f"Time builder: dropping {bad} row(s) with invalid time.")
+            out = out.dropna(subset=["__ts__"])
+        return out
+
+    def _build_time_series_from_columns(self, df: pd.DataFrame) -> pd.Series:
+        strategy = str(self.time_build_strategy.currentData() or "date_time")
+        tz = str(self.timezone_combo.currentText() or "none")
+
+        if strategy == "unix":
+            col = self.unix_col_combo.currentText()
+            unit = str(self.unix_unit_combo.currentText() or "s")
+            ts = pd.to_datetime(df[col], errors="coerce", unit=unit)
+        elif strategy == "ymd":
+            y = df[self.year_col_combo.currentText()]
+            m = df[self.month_col_combo.currentText()]
+            d = df[self.day_col_combo.currentText()]
+            ts = pd.to_datetime({"year": y, "month": m, "day": d}, errors="coerce")
+        elif strategy == "ymdh":
+            y = df[self.year_col_combo.currentText()]
+            m = df[self.month_col_combo.currentText()]
+            d = df[self.day_col_combo.currentText()]
+            h = df[self.hour_col_combo.currentText()]
+            ts = pd.to_datetime({"year": y, "month": m, "day": d, "hour": h}, errors="coerce")
+        else:  # date_time
+            date_col = self.date_col_combo.currentText()
+            time_col = self.timepart_col_combo.currentText()
+            fmt = self.datetime_format_edit.text().strip()
+            s = df[date_col].astype(str).str.strip() + " " + df[time_col].astype(str).str.strip()
+            if fmt:
+                ts = pd.to_datetime(s, errors="coerce", format=fmt)
+            else:
+                ts = pd.to_datetime(s, errors="coerce")
+
+        if tz == "UTC":
+            # treat parsed timestamps as UTC if naive; otherwise convert to UTC
+            try:
+                if getattr(ts.dt, "tz", None) is None:
+                    ts = ts.dt.tz_localize("UTC")
+                else:
+                    ts = ts.dt.tz_convert("UTC")
+            except Exception:
+                # if tz conversion fails, fall back to naive timestamps
+                pass
+
+        return ts
+
+    def _on_time_mode_changed(self, *args: object) -> None:
+        mode = str(self.time_mode_combo.currentData() or "single")
+        self.time_col_combo.setVisible(mode == "single")
+        # The label row in QFormLayout isn't easily toggled; hiding the widget is enough.
+        self.time_builder_box.setVisible(mode == "combine")
+
+    def _on_time_strategy_changed(self, *args: object) -> None:
+        strategy = str(self.time_build_strategy.currentData() or "date_time")
+        is_date_time = strategy == "date_time"
+        is_ymd = strategy == "ymd"
+        is_ymdh = strategy == "ymdh"
+        is_unix = strategy == "unix"
+
+        for w in [self.date_col_combo, self.timepart_col_combo, self.datetime_format_edit]:
+            w.setVisible(is_date_time)
+        for w in [self.year_col_combo, self.month_col_combo, self.day_col_combo]:
+            w.setVisible(is_ymd or is_ymdh)
+        self.hour_col_combo.setVisible(is_ymdh)
+        for w in [self.unix_col_combo, self.unix_unit_combo]:
+            w.setVisible(is_unix)
+
+        self.time_preview_label.setText("")
+
+    def _preview_parsed_time(self) -> None:
+        if self.df is None:
+            return
+        try:
+            df2 = self._prepare_dataframe_for_training(self.df)
+            if "__ts__" not in df2.columns:
+                self.time_preview_label.setText("Time mode is not 'combine' or 'row_order'.")
+                return
+            ts = pd.to_datetime(df2["__ts__"], errors="coerce")
+            head = ts.head(10).astype(str).tolist()
+            self.time_preview_label.setText("First 10 timestamps:\n" + "\n".join(head))
+        except Exception as e:
+            self.time_preview_label.setText(f"Failed to build time: {e}")
 
     def _save_current_plot(self) -> None:
         if self.last_result is None:
