@@ -4,6 +4,7 @@ import sys
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -471,6 +472,18 @@ class MainWindow(QMainWindow):
         out_toolbar.addWidget(btn_clear_hist)
         out_toolbar.addStretch(1)
 
+        # OpenAI key controls (process environment)
+        key_row = QHBoxLayout()
+        left_layout.addLayout(key_row)
+        key_row.addWidget(QLabel("OpenAI API key:"))
+        self.openai_key_edit = QLineEdit()
+        self.openai_key_edit.setEchoMode(QLineEdit.Password)
+        self.openai_key_edit.setPlaceholderText("Paste your OPENAI_API_KEY here…")
+        key_row.addWidget(self.openai_key_edit, 1)
+        btn_set_key = QPushButton("Set key for this app session")
+        btn_set_key.clicked.connect(self._set_openai_key_from_ui)
+        key_row.addWidget(btn_set_key)
+
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(2000)
@@ -896,6 +909,19 @@ class MainWindow(QMainWindow):
         self.gpt_box.clear()
         self._reset_gpt_memory()
 
+    def _set_openai_key_from_ui(self) -> None:
+        key = self.openai_key_edit.text().strip()
+        if not key:
+            QMessageBox.information(self, "No key", "Paste an OpenAI API key first.")
+            return
+        # Basic sanity check; don't log or display the key.
+        if len(key) < 20:
+            QMessageBox.warning(self, "Key looks too short", "That key looks too short. Please paste the full key.")
+            return
+        os.environ["OPENAI_API_KEY"] = key
+        self.gpt_box.appendPlainText("OpenAI API key set for this app session (OPENAI_API_KEY).")
+        QMessageBox.information(self, "Saved", "API key set for this app session.")
+
     def _reset_gpt_memory(self) -> None:
         self._gpt_messages = [
             {
@@ -924,7 +950,7 @@ class MainWindow(QMainWindow):
             client = OpenAI()
         except Exception as e:
             self.gpt_box.appendPlainText(
-                "GPT advisor not enabled. Set OPENAI_API_KEY in your environment.\n"
+                "GPT advisor not enabled. Set OPENAI_API_KEY (you can paste it in the UI).\n"
                 f"Details: {e}"
             )
             return
