@@ -101,7 +101,7 @@ class AvailableModels:
         ok["wma"] = (True, "")
 
         ok["arima"] = _try_import("statsmodels.tsa.arima.model", "ARIMA")
-        ok["prophet"] = _try_import("prophet", "Prophet")
+        ok["prophet"] = _try_prophet_ready()
         ok["xgboost"] = _try_import("xgboost", "XGBRegressor")
         ok["deepar"] = _try_import("torch", "nn")
         return AvailableModels(ok)
@@ -117,6 +117,22 @@ def _try_import(module: str, attr: str) -> Tuple[bool, str]:
         return True, ""
     except Exception as e:
         return False, f"{module}.{attr}"
+
+
+def _try_prophet_ready() -> Tuple[bool, str]:
+    """
+    Prophet can import successfully but still be unusable if its Stan backend is not configured
+    (common on Windows if CmdStan isn't installed/downloaded).
+    """
+    try:
+        from prophet import Prophet  # type: ignore
+
+        # Attempt minimal construction (this is where stan_backend errors show up).
+        _ = Prophet()
+        return True, ""
+    except Exception:
+        # Provide a concise "what's missing" hint for UI badges.
+        return False, "prophet backend not configured (CmdStan)"
 
 
 def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) -> TrainingResult:
@@ -499,15 +515,29 @@ def _predict_prophet(
     feat_names: List[str],
     params: Dict[str, Any],
 ) -> np.ndarray:
-    from prophet import Prophet
+    try:
+        from prophet import Prophet
+    except Exception as e:
+        raise RuntimeError("Prophet is not installed. Install it from requirements.txt") from e
 
     train = pd.DataFrame({"ds": pd.to_datetime(t_train), "y": np.asarray(y_train_t, dtype=float)})
-    m = Prophet(
-        changepoint_prior_scale=float(params.get("changepoint_prior_scale", 0.05)),
-        seasonality_prior_scale=float(params.get("seasonality_prior_scale", 10.0)),
-        seasonality_mode=str(params.get("seasonality_mode", "additive")),
-        n_changepoints=int(params.get("n_changepoints", 25)),
-    )
+    try:
+        m = Prophet(
+            changepoint_prior_scale=float(params.get("changepoint_prior_scale", 0.05)),
+            seasonality_prior_scale=float(params.get("seasonality_prior_scale", 10.0)),
+            seasonality_mode=str(params.get("seasonality_mode", "additive")),
+            n_changepoints=int(params.get("n_changepoints", 25)),
+        )
+    except AttributeError as e:
+        # Seen on some broken Windows installs where Prophet imports but backend init fails.
+        raise RuntimeError(
+            "Prophet failed to initialize its Stan backend.\n"
+            "Windows fix:\n"
+            "1) pip install -U cmdstanpy\n"
+            "2) python -c \"from cmdstanpy import install_cmdstan; install_cmdstan()\"\n"
+            "3) restart the app\n"
+            "Or disable Prophet in the UI."
+        ) from e
     if X_train_raw is not None and feat_names:
         for i, name in enumerate(feat_names):
             m.add_regressor(name)
