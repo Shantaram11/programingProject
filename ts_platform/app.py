@@ -127,6 +127,25 @@ class CheckBoxList(QWidget):
             self._boxes[name].setChecked(checked)
 
 
+class _NoWheelMixin:
+    """Prevent accidental value changes from mouse wheel scrolling."""
+
+    def wheelEvent(self, event):  # type: ignore[override]
+        event.ignore()
+
+
+class NoWheelSpinBox(_NoWheelMixin, QSpinBox):
+    pass
+
+
+class NoWheelDoubleSpinBox(_NoWheelMixin, QDoubleSpinBox):
+    pass
+
+
+class NoWheelComboBox(_NoWheelMixin, QComboBox):
+    pass
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -211,11 +230,11 @@ class MainWindow(QMainWindow):
         group.setLayout(form)
         right_layout.addWidget(group)
 
-        self.time_col_combo = QComboBox()
+        self.time_col_combo = NoWheelComboBox()
         self.time_col_combo.setToolTip("Datetime column. Range: any datetime-like column.")
         form.addRow(QLabel("Time column"), self.time_col_combo)
 
-        self.freq_combo = QComboBox()
+        self.freq_combo = NoWheelComboBox()
         self.freq_combo.addItems(["auto", "D", "H", "T", "S", "W", "M"])
         self.freq_combo.setToolTip("Data frequency. Default: auto. Options: D/H/T/S/W/M.")
         form.addRow(QLabel("Frequency"), self.freq_combo)
@@ -239,20 +258,20 @@ class MainWindow(QMainWindow):
         group2.setLayout(form2)
         right_layout.addWidget(group2)
 
-        self.train_ratio = QDoubleSpinBox()
+        self.train_ratio = NoWheelDoubleSpinBox()
         self.train_ratio.setRange(0.5, 0.95)
         self.train_ratio.setSingleStep(0.05)
         self.train_ratio.setValue(0.8)
         self.train_ratio.setToolTip("Train ratio. Default: 0.80. Range: 0.50–0.95.")
         form2.addRow(QLabel("Train ratio"), self.train_ratio)
 
-        self.horizon = QSpinBox()
+        self.horizon = NoWheelSpinBox()
         self.horizon.setRange(1, 5000)
         self.horizon.setValue(24)
         self.horizon.setToolTip("Forecast horizon. Default: 24. Range: 1–5000.")
         form2.addRow(QLabel("Forecast horizon"), self.horizon)
 
-        self.lag_window = QSpinBox()
+        self.lag_window = NoWheelSpinBox()
         self.lag_window.setRange(1, 5000)
         self.lag_window.setValue(48)
         self.lag_window.setToolTip("Lag window (ML/Deep models). Default: 48. Range: 1–5000.")
@@ -333,26 +352,26 @@ class MainWindow(QMainWindow):
         group.setLayout(form)
         layout.addWidget(group)
 
-        self.missing_method = QComboBox()
+        self.missing_method = NoWheelComboBox()
         self.missing_method.addItems(["none", "drop_rows", "ffill", "bfill", "interpolate_linear"])
         self.missing_method.setCurrentText("ffill")
         self.missing_method.setToolTip("Missing value handling. Default: ffill. Options: none/drop_rows/ffill/bfill/interpolate_linear.")
         form.addRow(QLabel("Missing values"), self.missing_method)
 
-        self.outlier_method = QComboBox()
+        self.outlier_method = NoWheelComboBox()
         self.outlier_method.addItems(["none", "clip_quantile"])
         self.outlier_method.setCurrentText("none")
         self.outlier_method.setToolTip("Outlier handling. Default: none. Options: none/clip_quantile.")
         form.addRow(QLabel("Outliers"), self.outlier_method)
 
         qrow = QHBoxLayout()
-        self.q_low = QDoubleSpinBox()
+        self.q_low = NoWheelDoubleSpinBox()
         self.q_low.setDecimals(3)
         self.q_low.setRange(0.0, 0.49)
         self.q_low.setValue(0.01)
         self.q_low.setSingleStep(0.01)
         self.q_low.setToolTip("Lower quantile. Default: 0.01. Range: 0.00–0.49.")
-        self.q_high = QDoubleSpinBox()
+        self.q_high = NoWheelDoubleSpinBox()
         self.q_high.setDecimals(3)
         self.q_high.setRange(0.51, 1.0)
         self.q_high.setValue(0.99)
@@ -367,13 +386,13 @@ class MainWindow(QMainWindow):
         qwrap.setLayout(qrow)
         form.addRow(QLabel("Clip quantiles"), qwrap)
 
-        self.scaler = QComboBox()
+        self.scaler = NoWheelComboBox()
         self.scaler.addItems(["none", "standard", "minmax"])
         self.scaler.setCurrentText("standard")
         self.scaler.setToolTip("Scaling for ML/Deep models. Default: standard. Options: none/standard/minmax.")
         form.addRow(QLabel("Scaling"), self.scaler)
 
-        self.transform = QComboBox()
+        self.transform = NoWheelComboBox()
         self.transform.addItems(["none", "log1p"])
         self.transform.setCurrentText("none")
         self.transform.setToolTip("Target transform. Default: none. Options: none/log1p.")
@@ -439,7 +458,7 @@ class MainWindow(QMainWindow):
         top_controls = QHBoxLayout()
         right_layout.addLayout(top_controls)
 
-        self.target_view_combo = QComboBox()
+        self.target_view_combo = NoWheelComboBox()
         self.target_view_combo.currentTextChanged.connect(self._redraw_plot)
         top_controls.addWidget(QLabel("Target:"))
         top_controls.addWidget(self.target_view_combo, 1)
@@ -479,7 +498,7 @@ class MainWindow(QMainWindow):
         self._add_model_group_common("MA (Moving Average)", "ma", enabled_default=True)
         form: QFormLayout = self.model_widgets["ma"]["form"]
 
-        w = QSpinBox()
+        w = NoWheelSpinBox()
         w.setRange(1, 5000)
         w.setValue(24)
         w.setToolTip("MA window. Default: 24. Range: 1–5000.")
@@ -490,14 +509,14 @@ class MainWindow(QMainWindow):
         self._add_model_group_common("WMA (Weighted Moving Average)", "wma", enabled_default=False)
         form: QFormLayout = self.model_widgets["wma"]["form"]
 
-        w = QSpinBox()
+        w = NoWheelSpinBox()
         w.setRange(1, 5000)
         w.setValue(24)
         w.setToolTip("WMA window. Default: 24. Range: 1–5000.")
         form.addRow(QLabel("window"), w)
         self.model_widgets["wma"]["window"] = w
 
-        scheme = QComboBox()
+        scheme = NoWheelComboBox()
         scheme.addItems(["linear_recent_heavier", "linear_older_heavier"])
         scheme.setCurrentText("linear_recent_heavier")
         scheme.setToolTip("Weight scheme. Default: linear_recent_heavier.")
@@ -508,15 +527,15 @@ class MainWindow(QMainWindow):
         self._add_model_group_common("ARIMA (statsmodels)", "arima", enabled_default=False)
         form: QFormLayout = self.model_widgets["arima"]["form"]
 
-        p = QSpinBox()
+        p = NoWheelSpinBox()
         p.setRange(0, 10)
         p.setValue(2)
         p.setToolTip("p order. Default: 2. Range: 0–10.")
-        d = QSpinBox()
+        d = NoWheelSpinBox()
         d.setRange(0, 3)
         d.setValue(1)
         d.setToolTip("d order. Default: 1. Range: 0–3.")
-        q = QSpinBox()
+        q = NoWheelSpinBox()
         q.setRange(0, 10)
         q.setValue(2)
         q.setToolTip("q order. Default: 2. Range: 0–10.")
@@ -547,7 +566,7 @@ class MainWindow(QMainWindow):
         self._add_model_group_common("Prophet (Meta)", "prophet", enabled_default=False)
         form: QFormLayout = self.model_widgets["prophet"]["form"]
 
-        cp = QDoubleSpinBox()
+        cp = NoWheelDoubleSpinBox()
         cp.setDecimals(4)
         cp.setRange(0.001, 2.0)
         cp.setValue(0.05)
@@ -556,7 +575,7 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("changepoint_prior_scale"), cp)
         self.model_widgets["prophet"]["cp"] = cp
 
-        sp = QDoubleSpinBox()
+        sp = NoWheelDoubleSpinBox()
         sp.setDecimals(4)
         sp.setRange(0.01, 20.0)
         sp.setValue(10.0)
@@ -565,14 +584,14 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("seasonality_prior_scale"), sp)
         self.model_widgets["prophet"]["sp"] = sp
 
-        mode = QComboBox()
+        mode = NoWheelComboBox()
         mode.addItems(["additive", "multiplicative"])
         mode.setCurrentText("additive")
         mode.setToolTip("seasonality_mode. Default: additive.")
         form.addRow(QLabel("seasonality_mode"), mode)
         self.model_widgets["prophet"]["mode"] = mode
 
-        ncp = QSpinBox()
+        ncp = NoWheelSpinBox()
         ncp.setRange(0, 100)
         ncp.setValue(25)
         ncp.setToolTip("n_changepoints. Default: 25. Range: 0–100.")
@@ -589,14 +608,14 @@ class MainWindow(QMainWindow):
         self._add_model_group_common("XGBoost (lag features)", "xgboost", enabled_default=True)
         form: QFormLayout = self.model_widgets["xgboost"]["form"]
 
-        depth = QSpinBox()
+        depth = NoWheelSpinBox()
         depth.setRange(1, 20)
         depth.setValue(6)
         depth.setToolTip("max_depth. Default: 6. Range: 1–20.")
         form.addRow(QLabel("max_depth"), depth)
         self.model_widgets["xgboost"]["max_depth"] = depth
 
-        lr = QDoubleSpinBox()
+        lr = NoWheelDoubleSpinBox()
         lr.setDecimals(4)
         lr.setRange(0.0001, 1.0)
         lr.setValue(0.05)
@@ -605,14 +624,14 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("learning_rate"), lr)
         self.model_widgets["xgboost"]["learning_rate"] = lr
 
-        n_estimators = QSpinBox()
+        n_estimators = NoWheelSpinBox()
         n_estimators.setRange(10, 5000)
         n_estimators.setValue(600)
         n_estimators.setToolTip("n_estimators. Default: 600. Range: 10–5000.")
         form.addRow(QLabel("n_estimators"), n_estimators)
         self.model_widgets["xgboost"]["n_estimators"] = n_estimators
 
-        subsample = QDoubleSpinBox()
+        subsample = NoWheelDoubleSpinBox()
         subsample.setDecimals(3)
         subsample.setRange(0.2, 1.0)
         subsample.setValue(0.9)
@@ -621,7 +640,7 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("subsample"), subsample)
         self.model_widgets["xgboost"]["subsample"] = subsample
 
-        colsample = QDoubleSpinBox()
+        colsample = NoWheelDoubleSpinBox()
         colsample.setDecimals(3)
         colsample.setRange(0.2, 1.0)
         colsample.setValue(0.9)
@@ -634,21 +653,21 @@ class MainWindow(QMainWindow):
         self._add_model_group_common("DeepAR (PyTorch, lightweight)", "deepar", enabled_default=False)
         form: QFormLayout = self.model_widgets["deepar"]["form"]
 
-        hidden = QSpinBox()
+        hidden = NoWheelSpinBox()
         hidden.setRange(8, 512)
         hidden.setValue(64)
         hidden.setToolTip("hidden_size. Default: 64. Range: 8–512.")
         form.addRow(QLabel("hidden_size"), hidden)
         self.model_widgets["deepar"]["hidden_size"] = hidden
 
-        layers = QSpinBox()
+        layers = NoWheelSpinBox()
         layers.setRange(1, 4)
         layers.setValue(2)
         layers.setToolTip("num_layers. Default: 2. Range: 1–4.")
         form.addRow(QLabel("num_layers"), layers)
         self.model_widgets["deepar"]["num_layers"] = layers
 
-        dropout = QDoubleSpinBox()
+        dropout = NoWheelDoubleSpinBox()
         dropout.setDecimals(3)
         dropout.setRange(0.0, 0.8)
         dropout.setValue(0.1)
@@ -657,14 +676,14 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("dropout"), dropout)
         self.model_widgets["deepar"]["dropout"] = dropout
 
-        epochs = QSpinBox()
+        epochs = NoWheelSpinBox()
         epochs.setRange(1, 200)
         epochs.setValue(20)
         epochs.setToolTip("epochs. Default: 20. Range: 1–200.")
         form.addRow(QLabel("epochs"), epochs)
         self.model_widgets["deepar"]["epochs"] = epochs
 
-        lr = QDoubleSpinBox()
+        lr = NoWheelDoubleSpinBox()
         lr.setDecimals(5)
         lr.setRange(1e-5, 1e-1)
         lr.setValue(1e-3)
@@ -673,14 +692,14 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("learning_rate"), lr)
         self.model_widgets["deepar"]["learning_rate"] = lr
 
-        batch = QSpinBox()
+        batch = NoWheelSpinBox()
         batch.setRange(8, 1024)
         batch.setValue(64)
         batch.setToolTip("batch_size. Default: 64. Range: 8–1024.")
         form.addRow(QLabel("batch_size"), batch)
         self.model_widgets["deepar"]["batch_size"] = batch
 
-        device = QComboBox()
+        device = NoWheelComboBox()
         device.addItems(["auto", "cpu"])
         device.setCurrentText("auto")
         device.setToolTip("device. Default: auto. Options: auto/cpu.")
@@ -1021,11 +1040,34 @@ class MainWindow(QMainWindow):
 def main() -> int:
     app = QApplication(sys.argv)
     apply_stylesheet(app, theme="light_blue.xml")
+    # Larger, more readable default font and components.
+    base_font = QFont()
+    base_font.setPointSize(12)
+    app.setFont(base_font)
     # qt-material themes can make checkbox indicators hard to see depending on palette;
     # force a readable checkbox style.
     app.setStyleSheet(
         app.styleSheet()
         + """
+QWidget { font-size: 12pt; }
+QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+  min-height: 34px;
+  padding: 6px 10px;
+}
+QPushButton {
+  min-height: 38px;
+  padding: 8px 14px;
+  font-weight: 600;
+}
+QTabBar::tab {
+  min-height: 34px;
+  min-width: 180px;
+  padding: 10px 14px;
+  font-weight: 600;
+}
+QGroupBox { font-weight: 700; }
+QLabel { font-size: 12pt; }
+
 QCheckBox { color: #1f1f1f; }
 QCheckBox::indicator {
   width: 18px;
