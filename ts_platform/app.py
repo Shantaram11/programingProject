@@ -1106,6 +1106,19 @@ class MainWindow(QMainWindow):
 
         best_model_key = sorted(self.last_result.models, key=_score)[0]
         best_model_label = MODEL_LABELS.get(best_model_key, best_model_key)
+        overfit_threshold = 1.5
+        best_overfit_ratio = None
+        try:
+            tm_best = train_metrics.get(best_model_key, {}) or {}
+            mm_best = metrics.get(best_model_key, {}) or {}
+            key = primary_metric if (primary_metric in tm_best and primary_metric in mm_best) else "rmse"
+            tr = float(tm_best.get(key)) if tm_best.get(key) is not None else None
+            te = float(mm_best.get(key)) if mm_best.get(key) is not None else None
+            if tr and te and tr > 0:
+                best_overfit_ratio = te / tr
+        except Exception:
+            best_overfit_ratio = None
+        overfit_detected = bool(best_overfit_ratio is not None and best_overfit_ratio > overfit_threshold)
 
         ranges = {
             "MA": {"window": "1–5000"},
@@ -1149,8 +1162,13 @@ class MainWindow(QMainWindow):
             "- If you suggest a cleaning change, the new value MUST be one of the allowed options.\n"
             "- Hyperparameter changes MUST stay within the provided ranges.\n"
             "- You must choose exactly ONE best model among the models trained in this run (no new models).\n"
-            "- You MUST check for overfitting using TRAIN vs TEST metrics. If overfitting is likely, suggest concrete regularization changes.\n\n"
+            "- You MUST check for overfitting using TRAIN vs TEST metrics.\n"
+            "- PRIORITY RULE: If overfitting is likely, your advice must FIRST focus on fixing overfitting. "
+            "Only after overfitting is addressed should you suggest performance tuning. "
+            "If overfitting is NOT likely, focus on improving test performance.\n\n"
             f"Best-by-metrics hint (computed): {best_model_label} (key={best_model_key}).\n\n"
+            f"OverfittingDetected (heuristic for best model): {overfit_detected}. "
+            f"best_model_test/train_ratio={best_overfit_ratio} (threshold={overfit_threshold}).\n\n"
             f"Targets: {self.last_result.targets}\n"
             f"Models trained (keys): {self.last_result.models}\n"
             f"Models trained (labels): {[MODEL_LABELS.get(m, m) for m in self.last_result.models]}\n\n"
@@ -1159,7 +1177,7 @@ class MainWindow(QMainWindow):
             "Aggregated metrics (lower is better). TRAIN is in-sample; TEST is held-out:\n"
             + "\n".join(model_lines)
             + "\n\n"
-            f"Overfitting signal (test/train {primary_metric} ratio; >1.5 is suspicious):\n"
+            f"Overfitting signal (test/train {primary_metric} ratio; >{overfit_threshold} is suspicious):\n"
             + ("\n".join(overfit_lines) if overfit_lines else "- (not available)")
             + "\n\n"
             "Allowed cleaning options (MUST use these exact codes):\n"
@@ -1169,6 +1187,8 @@ class MainWindow(QMainWindow):
             "Required output format:\n"
             "1) Best model: <MODEL_KEY> - <MODEL_LABEL>\n"
             "2) Changes (each must be explicit old->new):\n"
+            "   - If Overfitting check = yes: ONLY include overfitting-mitigation changes (regularization / simpler model).\n"
+            "   - If Overfitting check = no: ONLY include performance-improvement changes.\n"
             "- Cleaning: <setting>: <old> -> <new>\n"
             "- Hyperparameters: <MODEL_KEY>.<param>: <old> -> <new>\n"
             "- Data split/horizon/lags: <setting>: <old> -> <new>\n"
