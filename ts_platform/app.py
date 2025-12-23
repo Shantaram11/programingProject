@@ -71,6 +71,14 @@ MODEL_LABELS: Dict[str, str] = {
     "deepar": "DeepAR (Deep Autoregressive Recurrent Network)",
 }
 
+MISSING_METHOD_ITEMS: List[tuple[str, str]] = [
+    ("none (No autofill)", "none"),
+    ("drop_rows (Drop rows with missing values)", "drop_rows"),
+    ("ffill (Forward fill)", "ffill"),
+    ("bfill (Backward fill)", "bfill"),
+    ("interpolate_linear (Linear interpolation)", "interpolate_linear"),
+]
+
 
 def _now_run_id() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -374,9 +382,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(group)
 
         self.missing_method = NoWheelComboBox()
-        self.missing_method.addItems(["none", "drop_rows", "ffill", "bfill", "interpolate_linear"])
-        self.missing_method.setCurrentText("ffill")
-        self.missing_method.setToolTip("Missing value handling. Default: ffill. Options: none/drop_rows/ffill/bfill/interpolate_linear.")
+        for label, code in MISSING_METHOD_ITEMS:
+            self.missing_method.addItem(label, code)
+        # Default: ffill
+        for i in range(self.missing_method.count()):
+            if self.missing_method.itemData(i) == "ffill":
+                self.missing_method.setCurrentIndex(i)
+                break
+        self.missing_method.setToolTip(
+            "Missing value handling. Default: ffill (Forward fill). "
+            "Options: none/drop_rows/ffill/bfill/interpolate_linear."
+        )
         form.addRow(QLabel("Missing values"), self.missing_method)
 
         self.outlier_method = NoWheelComboBox()
@@ -473,6 +489,15 @@ class MainWindow(QMainWindow):
         out_toolbar.addStretch(1)
 
         # OpenAI key controls (process environment)
+        gpt_toggle_row = QHBoxLayout()
+        left_layout.addLayout(gpt_toggle_row)
+        self.enable_openai_chk = QCheckBox("Enable OpenAI training advisor")
+        self.enable_openai_chk.setChecked(False)
+        self.enable_openai_chk.setToolTip("If enabled, the app will call OpenAI after training to suggest improvements.")
+        self.enable_openai_chk.toggled.connect(self._on_openai_toggle)
+        gpt_toggle_row.addWidget(self.enable_openai_chk)
+        gpt_toggle_row.addStretch(1)
+
         key_row = QHBoxLayout()
         left_layout.addLayout(key_row)
         key_row.addWidget(QLabel("OpenAI API key:"))
@@ -483,6 +508,8 @@ class MainWindow(QMainWindow):
         btn_set_key = QPushButton("Set key for this app session")
         btn_set_key.clicked.connect(self._set_openai_key_from_ui)
         key_row.addWidget(btn_set_key)
+        self._openai_key_widgets = [self.openai_key_edit, btn_set_key]
+        self._on_openai_toggle(False)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -786,7 +813,7 @@ class MainWindow(QMainWindow):
         feats = [c for c in feats if c not in targets]
 
         cleaning = CleaningConfig(
-            missing_method=self.missing_method.currentText(),
+            missing_method=str(self.missing_method.currentData() or "ffill"),
             outlier_method=self.outlier_method.currentText(),
             clip_q_low=float(self.q_low.value()),
             clip_q_high=float(self.q_high.value()),
@@ -916,6 +943,12 @@ class MainWindow(QMainWindow):
         self._append_log("OpenAI API key set for this app session (OPENAI_API_KEY).")
         QMessageBox.information(self, "Saved", "API key set for this app session.")
 
+    def _on_openai_toggle(self, enabled: bool) -> None:
+        for w in getattr(self, "_openai_key_widgets", []):
+            w.setEnabled(bool(enabled))
+        if not enabled:
+            self._append_log("OpenAI advisor disabled.")
+
     def _reset_gpt_memory(self) -> None:
         self._gpt_messages = [
             {
@@ -932,6 +965,8 @@ class MainWindow(QMainWindow):
 
     def _maybe_get_gpt_suggestions(self) -> None:
         if self.last_result is None:
+            return
+        if not getattr(self, "enable_openai_chk", None) or not self.enable_openai_chk.isChecked():
             return
         if OpenAI is None:
             self._append_log(
@@ -960,17 +995,64 @@ class MainWindow(QMainWindow):
                 f"- {label}: MAE={mm.get('mae')}, RMSE={mm.get('rmse')}, MAPE%={mm.get('mape_pct')}"
             )
 
+        # Pre-select best model (lowest RMSE, then MAE) to constrain the advisor.
+        def _score(m: str) -> tuple[float, float]:
+            mm = metrics.get(m, {})
+            rmse = float(mm.get("rmse", float("inf")))
+            mae = float(mm.get("mae", float("inf")))
+            return (rmse, mae)
+
+        best_model_key = sorted(self.last_result.models, key=_score)[0]
+        best_model_label = MODEL_LABELS.get(best_model_key, best_model_key)
+
+        ranges = {
+            "MA": {"window": "1–5000"},
+            "WMA": {"window": "1–5000"},
+            "ARIMA": {"p": "0–10", "d": "0–3", "q": "0–10"},
+            "PROPHET": {
+                "changepoint_prior_scale": "0.001–2.0",
+                "seasonality_prior_scale": "0.01–20.0",
+                "n_changepoints": "0–100",
+                "seasonality_mode": "additive|multiplicative",
+            },
+            "XGB": {
+                "max_depth": "1–20",
+                "learning_rate": "0.0001–1.0",
+                "n_estimators": "10–5000",
+                "subsample": "0.2–1.0",
+                "colsample_bytree": "0.2–1.0",
+            },
+            "DeepAR": {
+                "hidden_size": "8–512",
+                "num_layers": "1–4",
+                "dropout": "0.0–0.8",
+                "epochs": "1–200",
+                "learning_rate": "1e-5–1e-1",
+                "batch_size": "8–1024",
+            },
+        }
+
         user_msg = (
-            "Here is the latest time-series training run.\n\n"
+            "You must choose exactly ONE best model among the models that were trained in this run, "
+            "based only on the provided metrics. Do NOT suggest untrained models.\n\n"
+            f"Best-by-metrics hint (computed): {best_model_label} (key={best_model_key}).\n\n"
             f"Targets: {self.last_result.targets}\n"
-            f"Models trained: {[MODEL_LABELS.get(m, m) for m in self.last_result.models]}\n\n"
-            "Cleaning/settings:\n"
+            f"Models trained (keys): {self.last_result.models}\n"
+            f"Models trained (labels): {[MODEL_LABELS.get(m, m) for m in self.last_result.models]}\n\n"
+            "Current settings (JSON):\n"
             f"{json.dumps(cfg, indent=2, ensure_ascii=False)}\n\n"
-            "Aggregated metrics:\n"
+            "Aggregated metrics (lower is better):\n"
             + "\n".join(model_lines)
             + "\n\n"
-            "Give suggestions to improve performance and reliability. "
-            "Include which model(s) to prefer, which to drop, and specific hyperparameter changes."
+            "Allowed hyperparameter ranges (UI constraints):\n"
+            f"{json.dumps(ranges, indent=2, ensure_ascii=False)}\n\n"
+            "Required output format:\n"
+            "1) Best model: <MODEL_KEY> - <MODEL_LABEL>\n"
+            "2) Changes (each must be explicit old->new):\n"
+            "- Cleaning: <setting>: <old> -> <new>\n"
+            "- Hyperparameters: <MODEL_KEY>.<param>: <old> -> <new>\n"
+            "- Data split/horizon/lags: <setting>: <old> -> <new>\n"
+            "3) One-sentence rationale.\n"
         )
 
         self._append_log("\n--- GPT advisor: requesting suggestions… ---\n")
