@@ -5,6 +5,7 @@ import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -78,6 +79,22 @@ MISSING_METHOD_ITEMS: List[tuple[str, str]] = [
     ("ffill (Forward fill)", "ffill"),
     ("bfill (Backward fill)", "bfill"),
     ("interpolate_linear (Linear interpolation)", "interpolate_linear"),
+]
+
+OUTLIER_METHOD_ITEMS: List[tuple[str, str]] = [
+    ("none (No outlier handling)", "none"),
+    ("clip_quantile (Quantile clipping)", "clip_quantile"),
+]
+
+SCALER_ITEMS: List[tuple[str, str]] = [
+    ("none (No scaling)", "none"),
+    ("standard (StandardScaler / z-score scaling)", "standard"),
+    ("minmax (MinMaxScaler)", "minmax"),
+]
+
+TARGET_TRANSFORM_ITEMS: List[tuple[str, str]] = [
+    ("none (No transform)", "none"),
+    ("log1p (log(1+x))", "log1p"),
 ]
 
 
@@ -403,8 +420,12 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("Missing values"), self.missing_method)
 
         self.outlier_method = NoWheelComboBox()
-        self.outlier_method.addItems(["none", "clip_quantile"])
-        self.outlier_method.setCurrentText("none")
+        for label, code in OUTLIER_METHOD_ITEMS:
+            self.outlier_method.addItem(label, code)
+        for i in range(self.outlier_method.count()):
+            if self.outlier_method.itemData(i) == "none":
+                self.outlier_method.setCurrentIndex(i)
+                break
         self.outlier_method.setToolTip("Outlier handling. Default: none. Options: none/clip_quantile.")
         form.addRow(QLabel("Outliers"), self.outlier_method)
 
@@ -431,14 +452,22 @@ class MainWindow(QMainWindow):
         form.addRow(QLabel("Clip quantiles"), qwrap)
 
         self.scaler = NoWheelComboBox()
-        self.scaler.addItems(["none", "standard", "minmax"])
-        self.scaler.setCurrentText("standard")
+        for label, code in SCALER_ITEMS:
+            self.scaler.addItem(label, code)
+        for i in range(self.scaler.count()):
+            if self.scaler.itemData(i) == "standard":
+                self.scaler.setCurrentIndex(i)
+                break
         self.scaler.setToolTip("Scaling for ML/Deep models. Default: standard. Options: none/standard/minmax.")
         form.addRow(QLabel("Scaling"), self.scaler)
 
         self.transform = NoWheelComboBox()
-        self.transform.addItems(["none", "log1p"])
-        self.transform.setCurrentText("none")
+        for label, code in TARGET_TRANSFORM_ITEMS:
+            self.transform.addItem(label, code)
+        for i in range(self.transform.count()):
+            if self.transform.itemData(i) == "none":
+                self.transform.setCurrentIndex(i)
+                break
         self.transform.setToolTip("Target transform. Default: none. Options: none/log1p.")
         form.addRow(QLabel("Target transform"), self.transform)
 
@@ -822,11 +851,11 @@ class MainWindow(QMainWindow):
 
         cleaning = CleaningConfig(
             missing_method=str(self.missing_method.currentData() or "ffill"),
-            outlier_method=self.outlier_method.currentText(),
+            outlier_method=str(self.outlier_method.currentData() or "none"),
             clip_q_low=float(self.q_low.value()),
             clip_q_high=float(self.q_high.value()),
-            scaler=self.scaler.currentText(),
-            target_transform=self.transform.currentText(),
+            scaler=str(self.scaler.currentData() or "standard"),
+            target_transform=str(self.transform.currentData() or "none"),
         )
 
         features = FeatureConfig(
@@ -1041,9 +1070,21 @@ class MainWindow(QMainWindow):
             },
         }
 
+        allowed_cleaning = {
+            "missing_method": [code for _, code in MISSING_METHOD_ITEMS],
+            "outlier_method": [code for _, code in OUTLIER_METHOD_ITEMS],
+            "scaler": [code for _, code in SCALER_ITEMS],
+            "target_transform": [code for _, code in TARGET_TRANSFORM_ITEMS],
+            "clip_q_low": "0.00–0.49",
+            "clip_q_high": "0.51–1.00",
+        }
+
         user_msg = (
-            "You must choose exactly ONE best model among the models that were trained in this run, "
-            "based only on the provided metrics. Do NOT suggest untrained models.\n\n"
+            "You must produce ONLY actionable settings that exist in the UI.\n"
+            "- Do NOT mention methods we do not provide (e.g., z-score outlier removal, isolation forest, etc.).\n"
+            "- If you suggest a cleaning change, the new value MUST be one of the allowed options.\n"
+            "- Hyperparameter changes MUST stay within the provided ranges.\n"
+            "- You must choose exactly ONE best model among the models trained in this run (no new models).\n\n"
             f"Best-by-metrics hint (computed): {best_model_label} (key={best_model_key}).\n\n"
             f"Targets: {self.last_result.targets}\n"
             f"Models trained (keys): {self.last_result.models}\n"
@@ -1053,6 +1094,8 @@ class MainWindow(QMainWindow):
             "Aggregated metrics (lower is better):\n"
             + "\n".join(model_lines)
             + "\n\n"
+            "Allowed cleaning options (MUST use these exact codes):\n"
+            f"{json.dumps(allowed_cleaning, indent=2, ensure_ascii=False)}\n\n"
             "Allowed hyperparameter ranges (UI constraints):\n"
             f"{json.dumps(ranges, indent=2, ensure_ascii=False)}\n\n"
             "Required output format:\n"
@@ -1077,9 +1120,82 @@ class MainWindow(QMainWindow):
             self._append_log(f"GPT request failed: {e}\n\n{traceback.format_exc()}")
             return
 
+        # Validate applicability; retry once if GPT suggests unsupported options.
+        issues = self._validate_gpt_advice(text, allowed_cleaning=allowed_cleaning)
+        if issues:
+            self._append_log(
+                "GPT advice had unsupported suggestions; retrying with constraints.\n"
+                + "\n".join([f"- {x}" for x in issues])
+                + "\n"
+            )
+            try:
+                repair_msg = (
+                    "Your previous answer contained unsupported options.\n"
+                    "Fix it and output again using ONLY allowed UI options.\n\n"
+                    "Unsupported items detected:\n"
+                    + "\n".join([f"- {x}" for x in issues])
+                    + "\n\n"
+                    "Remember: for cleaning changes, the NEW value must be one of the allowed codes:\n"
+                    f"{json.dumps(allowed_cleaning, indent=2, ensure_ascii=False)}\n"
+                )
+                messages2 = list(self._gpt_messages) + [{"role": "user", "content": user_msg}, {"role": "user", "content": repair_msg}]
+                resp2 = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages2,
+                    temperature=0.1,
+                )
+                text2 = resp2.choices[0].message.content or ""
+                issues2 = self._validate_gpt_advice(text2, allowed_cleaning=allowed_cleaning)
+                if not issues2:
+                    text = text2
+                else:
+                    self._append_log(
+                        "GPT retry still contained unsupported suggestions; showing best-effort output.\n"
+                        + "\n".join([f"- {x}" for x in issues2])
+                    )
+                    text = text2
+            except Exception as e:
+                self._append_log(f"GPT retry failed: {e}\n\n{traceback.format_exc()}")
+
         self._gpt_messages.append({"role": "user", "content": user_msg})
         self._gpt_messages.append({"role": "assistant", "content": text})
         self._append_log(text.strip() + "\n")
+
+    def _validate_gpt_advice(self, text: str, allowed_cleaning: Dict[str, Any]) -> List[str]:
+        """
+        Best-effort validator for the constrained output format.
+        Returns a list of issues (empty => looks applicable).
+        """
+        issues: List[str] = []
+        if not text.strip():
+            return ["empty response"]
+
+        # Validate "Best model" key if present
+        m_best = re.search(r"^\s*1\)\s*Best model:\s*([A-Za-z0-9_]+)\s*-", text, flags=re.MULTILINE)
+        if m_best:
+            key = m_best.group(1).strip()
+            if self.last_result is not None and key not in self.last_result.models:
+                issues.append(f"Best model '{key}' is not one of the trained models.")
+
+        # Validate cleaning new values are allowed codes
+        # Expected line: "- Cleaning: outlier_method: old -> new"
+        for m in re.finditer(r"^-+\s*Cleaning:\s*([A-Za-z0-9_]+)\s*:\s*(.*?)\s*->\s*(.*?)\s*$", text, flags=re.MULTILINE):
+            setting = m.group(1).strip()
+            new_val = m.group(3).strip()
+            if setting in {"missing_method", "outlier_method", "scaler", "target_transform"}:
+                allowed = set(allowed_cleaning.get(setting, []))
+                if new_val not in allowed:
+                    issues.append(f"Cleaning.{setting} new value '{new_val}' not in allowed {sorted(allowed)}")
+
+        # Quick heuristic: reject common unsupported outlier suggestions
+        lower = text.lower()
+        if "z-score" in lower or "zscore" in lower:
+            if "outlier" in lower:
+                issues.append("Mentions z-score outlier handling (not available).")
+        if "isolation forest" in lower or "lof" in lower:
+            issues.append("Mentions outlier methods not available in UI.")
+
+        return issues
 
     def _populate_visualization_controls(self) -> None:
         self.target_view_combo.blockSignals(True)
