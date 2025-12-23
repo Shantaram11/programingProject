@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -82,6 +83,12 @@ MISSING_METHOD_ITEMS: List[tuple[str, str]] = [
 
 def _now_run_id() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _slugify_name(name: str) -> str:
+    s = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in name.strip())
+    s = "_".join([p for p in s.split("_") if p])  # collapse repeats
+    return s[:64]
 
 
 def _human_ts(ts: str) -> str:
@@ -1156,9 +1163,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No result", "Train at least one model first.")
             return
 
-        run_id = self.last_result.run_id or _now_run_id()
+        default_name = "my_run"
+        name, ok = QInputDialog.getText(
+            self,
+            "Save result",
+            "Record name (will be shown in Saved Results):",
+            QLineEdit.Normal,
+            default_name,
+        )
+        if not ok:
+            return
+        display_name = name.strip() or default_name
+        slug = _slugify_name(display_name) or "run"
+        run_id = f"{_now_run_id()}__{slug}"
+
+        # Avoid collisions if user saves twice in the same second
+        suffix = 1
+        while self.store.run_dir(run_id).exists():
+            suffix += 1
+            run_id = f"{_now_run_id()}__{slug}_{suffix}"
+
         try:
-            run_path = self.store.save_run(run_id=run_id, result=self.last_result)
+            run_path = self.store.save_run(run_id=run_id, result=self.last_result, display_name=display_name)
         except Exception as e:
             QMessageBox.critical(self, "Save failed", f"{e}\n\n{traceback.format_exc()}")
             return
@@ -1216,7 +1242,8 @@ class MainWindow(QMainWindow):
         self.runs_list.clear()
         runs = self.store.list_runs()
         for run in runs:
-            it = QListWidgetItem(f"{_human_ts(run.run_id)}  ({run.run_id})")
+            shown = run.display_name.strip() or run.run_id
+            it = QListWidgetItem(f"{shown}  [{_human_ts(run.run_id)}]")
             it.setData(Qt.UserRole, run.run_id)
             self.runs_list.addItem(it)
 

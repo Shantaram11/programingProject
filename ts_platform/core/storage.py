@@ -16,6 +16,7 @@ from ts_platform.core.pipeline import TrainingResult
 class RunMeta:
     run_id: str
     path: Path
+    display_name: str = ""
 
 
 class RunStore:
@@ -37,16 +38,25 @@ class RunStore:
         runs: List[RunMeta] = []
         for p in sorted(self.runs_root.iterdir(), reverse=True):
             if p.is_dir():
-                runs.append(RunMeta(run_id=p.name, path=p))
+                display_name = ""
+                info_path = p / "info.json"
+                if info_path.exists():
+                    try:
+                        info = json.loads(info_path.read_text(encoding="utf-8"))
+                        display_name = str(info.get("display_name") or "")
+                    except Exception:
+                        display_name = ""
+                runs.append(RunMeta(run_id=p.name, path=p, display_name=display_name))
         return runs
 
-    def save_run(self, run_id: str, result: TrainingResult) -> Path:
+    def save_run(self, run_id: str, result: TrainingResult, display_name: str = "") -> Path:
         run_dir = self.run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
 
         # Save info/config/metrics
         info = {
             "run_id": run_id,
+            "display_name": display_name,
             "targets": result.targets,
             "models": result.models,
             "metrics_by_model": result.metrics_by_model,
