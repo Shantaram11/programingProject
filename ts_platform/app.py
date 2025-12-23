@@ -1155,16 +1155,28 @@ class MainWindow(QMainWindow):
             "clip_q_high": "0.51–1.00",
         }
 
+        priority_rule = (
+            "FIRST STEP: Decide whether overfitting exists from TRAIN vs TEST. "
+            "If yes, you must ONLY give overfitting-mitigation advice. "
+            "If no, you must ONLY give performance-improvement advice."
+        )
+        branch_rule = (
+            "Overfitting branch: detected=True, so output ONLY overfitting-mitigation changes "
+            "(regularization / simplifying the chosen model / reducing capacity). "
+            "Do NOT include general performance tuning yet."
+            if overfit_detected
+            else "Performance branch: detected=False, so output ONLY performance-improvement changes on TEST. "
+            "Do NOT include overfitting-mitigation changes."
+        )
+
         user_msg = (
             "You must produce ONLY actionable settings that exist in the UI.\n"
             "- Do NOT mention methods we do not provide (e.g., z-score outlier removal, isolation forest, etc.).\n"
             "- If you suggest a cleaning change, the new value MUST be one of the allowed options.\n"
             "- Hyperparameter changes MUST stay within the provided ranges.\n"
             "- You must choose exactly ONE best model among the models trained in this run (no new models).\n"
-            "- You MUST check for overfitting using TRAIN vs TEST metrics.\n"
-            "- PRIORITY RULE: If overfitting is likely, your advice must FIRST focus on fixing overfitting. "
-            "Only after overfitting is addressed should you suggest performance tuning. "
-            "If overfitting is NOT likely, focus on improving test performance.\n\n"
+            f"- {priority_rule}\n"
+            f"- {branch_rule}\n\n"
             f"Best-by-metrics hint (computed): {best_model_label} (key={best_model_key}).\n\n"
             f"OverfittingDetected (heuristic for best model): {overfit_detected}. "
             f"best_model_test/train_ratio={best_overfit_ratio} (threshold={overfit_threshold}).\n\n"
@@ -1186,8 +1198,7 @@ class MainWindow(QMainWindow):
             "Required output format:\n"
             "1) Best model: <MODEL_KEY> - <MODEL_LABEL>\n"
             "2) Changes (each must be explicit old->new):\n"
-            "   - If Overfitting check = yes: ONLY include overfitting-mitigation changes (regularization / simpler model).\n"
-            "   - If Overfitting check = no: ONLY include performance-improvement changes.\n"
+            f"   - Your branch for this run is: {'OVERFITTING' if overfit_detected else 'PERFORMANCE'}.\n"
             "- Cleaning: <setting>: <old> -> <new>\n"
             "- Hyperparameters: <MODEL_KEY>.<param>: <old> -> <new>\n"
             "- If you suggest any XGB or DeepAR hyperparameter changes, you MUST explicitly address learning_rate "
