@@ -762,9 +762,9 @@ class MainWindow(QMainWindow):
         lr = NoWheelDoubleSpinBox()
         lr.setDecimals(4)
         lr.setRange(0.0001, 1.0)
-        lr.setValue(0.05)
+        lr.setValue(0.01)
         lr.setSingleStep(0.01)
-        lr.setToolTip("learning_rate. Default: 0.05. Range: 0.0001–1.0.")
+        lr.setToolTip("learning_rate. Default: 0.01. Range: 0.0001–1.0.")
         form.addRow(QLabel("learning_rate"), lr)
         self.model_widgets["xgboost"]["learning_rate"] = lr
 
@@ -1191,6 +1191,8 @@ class MainWindow(QMainWindow):
             "   - If Overfitting check = no: ONLY include performance-improvement changes.\n"
             "- Cleaning: <setting>: <old> -> <new>\n"
             "- Hyperparameters: <MODEL_KEY>.<param>: <old> -> <new>\n"
+            "- If you suggest any XGB or DeepAR hyperparameter changes, you MUST explicitly address learning_rate "
+            "(either change it with old->new or state it stays the same).\n"
             "- Data split/horizon/lags: <setting>: <old> -> <new>\n"
             "3) Overfitting check: <yes/no> and why (reference the train/test numbers).\n"
             "4) One-sentence rationale.\n"
