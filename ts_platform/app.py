@@ -1088,12 +1088,11 @@ class MainWindow(QMainWindow):
                 f"TEST({primary_metric}={mm.get(primary_metric)})"
             )
             try:
-                # use primary metric if available, else fallback to RMSE
-                key = primary_metric if (primary_metric in tm and primary_metric in mm) else "rmse"
-                tr = float(tm.get(key)) if tm.get(key) is not None else None
-                te = float(mm.get(key)) if mm.get(key) is not None else None
+                # Overfitting detection MUST use the user-selected primary metric.
+                tr = float(tm.get(primary_metric)) if tm.get(primary_metric) is not None else None
+                te = float(mm.get(primary_metric)) if mm.get(primary_metric) is not None else None
                 if tr and te and tr > 0:
-                    overfit_lines.append(f"- {label}: test/train {key} ratio ≈ {te / tr:.3g}")
+                    overfit_lines.append(f"- {label}: test/train {primary_metric} ratio ≈ {te / tr:.3g}")
             except Exception:
                 pass
 
@@ -1111,9 +1110,9 @@ class MainWindow(QMainWindow):
         try:
             tm_best = train_metrics.get(best_model_key, {}) or {}
             mm_best = metrics.get(best_model_key, {}) or {}
-            key = primary_metric if (primary_metric in tm_best and primary_metric in mm_best) else "rmse"
-            tr = float(tm_best.get(key)) if tm_best.get(key) is not None else None
-            te = float(mm_best.get(key)) if mm_best.get(key) is not None else None
+            # MUST use the user-selected primary metric here too.
+            tr = float(tm_best.get(primary_metric)) if tm_best.get(primary_metric) is not None else None
+            te = float(mm_best.get(primary_metric)) if mm_best.get(primary_metric) is not None else None
             if tr and te and tr > 0:
                 best_overfit_ratio = te / tr
         except Exception:
