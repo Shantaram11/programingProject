@@ -74,6 +74,17 @@ MODEL_LABELS: Dict[str, str] = {
     "deepar": "DeepAR (Deep Autoregressive Recurrent Network)",
 }
 
+EVAL_METRIC_ITEMS: List[tuple[str, str]] = [
+    ("RMSE (Root Mean Squared Error)", "rmse"),
+    ("MAE (Mean Absolute Error)", "mae"),
+    ("MAPE% (Mean Absolute Percentage Error)", "mape_pct"),
+    ("MSE (Mean Squared Error)", "mse"),
+    ("MaxError (Max Absolute Error)", "max_error"),
+    ("MinError (Min Absolute Error)", "min_error"),
+]
+
+EVAL_METRIC_DEFAULTS = {"rmse", "mae", "mape_pct"}
+
 MISSING_METHOD_ITEMS: List[tuple[str, str]] = [
     ("No autofill", "none"),
     ("Drop rows with missing values", "drop_rows"),
@@ -592,6 +603,18 @@ class MainWindow(QMainWindow):
         self.canvas = MplCanvas()
         right_layout.addWidget(self.canvas, 1)
 
+        self.eval_metrics_box = QGroupBox("Evaluation metrics (multi-select)")
+        em_layout = QVBoxLayout()
+        self.eval_metrics_box.setLayout(em_layout)
+        self._eval_metric_checks: Dict[str, QCheckBox] = {}
+        for label, code in EVAL_METRIC_ITEMS:
+            chk = QCheckBox(label)
+            chk.setChecked(code in EVAL_METRIC_DEFAULTS)
+            em_layout.addWidget(chk)
+            self._eval_metric_checks[code] = chk
+        em_layout.addStretch(1)
+        right_layout.addWidget(self.eval_metrics_box)
+
         self.metrics_table = QTableWidget()
         self.metrics_table.setAlternatingRowColors(True)
         right_layout.addWidget(QLabel("Metrics (per model):"))
@@ -855,6 +878,10 @@ class MainWindow(QMainWindow):
         # By default features list is all numeric; remove targets to avoid leakage unless user explicitly keeps them.
         feats = [c for c in feats if c not in targets]
 
+        eval_metrics = [k for k, chk in self._eval_metric_checks.items() if chk.isChecked()]
+        if not eval_metrics:
+            raise ValueError("Please select at least 1 evaluation metric (e.g. RMSE, MAE, MSE).")
+
         cleaning = CleaningConfig(
             missing_method=str(self.missing_method.currentData() or "ffill"),
             outlier_method=str(self.outlier_method.currentData() or "none"),
@@ -873,6 +900,7 @@ class MainWindow(QMainWindow):
             train_ratio=float(self.train_ratio.value()),
             horizon=int(self.horizon.value()),
             lag_window=int(self.lag_window.value()),
+            eval_metrics=eval_metrics,
         )
 
         models: Dict[str, ModelConfig] = {}
@@ -1041,6 +1069,13 @@ class MainWindow(QMainWindow):
         metrics = self.last_result.metrics_by_model
         train_metrics = getattr(self.last_result, "train_metrics_by_model", {}) or {}
 
+        selected_metrics = (
+            (((cfg.get("features") or {}).get("eval_metrics")) or ["rmse"])
+            if isinstance(cfg, dict)
+            else ["rmse"]
+        )
+        primary_metric = str(selected_metrics[0]) if selected_metrics else "rmse"
+
         model_lines = []
         overfit_lines = []
         for m in self.last_result.models:
@@ -1049,23 +1084,25 @@ class MainWindow(QMainWindow):
             tm = train_metrics.get(m, {})
             model_lines.append(
                 f"- {label}: "
-                f"TRAIN(RMSE={tm.get('rmse')}, MAE={tm.get('mae')}, MAPE%={tm.get('mape_pct')}) | "
-                f"TEST(RMSE={mm.get('rmse')}, MAE={mm.get('mae')}, MAPE%={mm.get('mape_pct')})"
+                f"TRAIN({primary_metric}={tm.get(primary_metric)}) | "
+                f"TEST({primary_metric}={mm.get(primary_metric)})"
             )
             try:
-                tr = float(tm.get("rmse")) if tm.get("rmse") is not None else None
-                te = float(mm.get("rmse")) if mm.get("rmse") is not None else None
+                # use primary metric if available, else fallback to RMSE
+                key = primary_metric if (primary_metric in tm and primary_metric in mm) else "rmse"
+                tr = float(tm.get(key)) if tm.get(key) is not None else None
+                te = float(mm.get(key)) if mm.get(key) is not None else None
                 if tr and te and tr > 0:
-                    overfit_lines.append(f"- {label}: test/train RMSE ratio ≈ {te / tr:.3g}")
+                    overfit_lines.append(f"- {label}: test/train {key} ratio ≈ {te / tr:.3g}")
             except Exception:
                 pass
 
         # Pre-select best model (lowest RMSE, then MAE) to constrain the advisor.
         def _score(m: str) -> tuple[float, float]:
             mm = metrics.get(m, {})
+            primary = float(mm.get(primary_metric, float("inf")))
             rmse = float(mm.get("rmse", float("inf")))
-            mae = float(mm.get("mae", float("inf")))
-            return (rmse, mae)
+            return (primary, rmse)
 
         best_model_key = sorted(self.last_result.models, key=_score)[0]
         best_model_label = MODEL_LABELS.get(best_model_key, best_model_key)
@@ -1122,7 +1159,7 @@ class MainWindow(QMainWindow):
             "Aggregated metrics (lower is better). TRAIN is in-sample; TEST is held-out:\n"
             + "\n".join(model_lines)
             + "\n\n"
-            "Overfitting signal (test/train RMSE ratio; >1.5 is suspicious):\n"
+            f"Overfitting signal (test/train {primary_metric} ratio; >1.5 is suspicious):\n"
             + ("\n".join(overfit_lines) if overfit_lines else "- (not available)")
             + "\n\n"
             "Allowed cleaning options (MUST use these exact codes):\n"
@@ -1291,19 +1328,30 @@ class MainWindow(QMainWindow):
             self.metrics_table.clear()
             return
 
-        # Flatten metrics: rows = model, cols = metrics aggregated across targets
+        # Flatten metrics: rows = model, cols = selected metrics (from config)
+        cfg = self.last_result.config or {}
+        eval_metrics = (
+            (((cfg.get("features") or {}).get("eval_metrics")) or ["rmse", "mae", "mape_pct"])
+            if isinstance(cfg, dict)
+            else ["rmse", "mae", "mape_pct"]
+        )
+        metric_labels = {code: label for (label, code) in EVAL_METRIC_ITEMS}
+
         models = list(self.last_result.models)
-        cols = ["MAE", "RMSE", "MAPE(%)"]
+        cols = [metric_labels.get(c, c) for c in eval_metrics]
         self.metrics_table.setRowCount(len(models))
         self.metrics_table.setColumnCount(len(cols))
         self.metrics_table.setHorizontalHeaderLabels(cols)
         self.metrics_table.setVerticalHeaderLabels([MODEL_LABELS.get(m, m) for m in models])
 
         for r, model_name in enumerate(models):
-            m = self.last_result.metrics_by_model[model_name]
-            self.metrics_table.setItem(r, 0, QTableWidgetItem(f"{m['mae']:.6g}"))
-            self.metrics_table.setItem(r, 1, QTableWidgetItem(f"{m['rmse']:.6g}"))
-            self.metrics_table.setItem(r, 2, QTableWidgetItem(f"{m['mape_pct']:.4g}"))
+            m = self.last_result.metrics_by_model.get(model_name, {})
+            for cidx, code in enumerate(eval_metrics):
+                v = m.get(code)
+                if isinstance(v, (int, float)):
+                    self.metrics_table.setItem(r, cidx, QTableWidgetItem(f"{float(v):.6g}"))
+                else:
+                    self.metrics_table.setItem(r, cidx, QTableWidgetItem(str(v)))
         self.metrics_table.resizeColumnsToContents()
 
     def _save_last_result(self) -> None:

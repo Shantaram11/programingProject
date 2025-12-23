@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -33,6 +33,8 @@ class FeatureConfig:
     train_ratio: float = 0.8
     horizon: int = 24
     lag_window: int = 48
+    # Which evaluation metrics to compute. Default keeps prior behavior.
+    eval_metrics: List[str] = field(default_factory=lambda: ["rmse", "mae", "mape_pct"])
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,7 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
 
     feat = cfg.features
     clean = cfg.cleaning
+    eval_metrics = getattr(feat, "eval_metrics", None) or ["rmse", "mae", "mape_pct"]
 
     if feat.time_col not in df.columns:
         raise ValueError(f"time column '{feat.time_col}' not found in dataframe")
@@ -262,7 +265,7 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
                 if len(y_pred_train) != len(y_true_train):
                     # assume the predictions correspond to the tail of train
                     y_true_train = y_true_train[-len(y_pred_train) :]
-                mtr = _metrics(y_true_train, y_pred_train)
+                mtr = _metrics(y_true_train, y_pred_train, eval_metrics=eval_metrics)
                 train_metrics_by_model[model_name].append(mtr)
 
             # ---- Test metrics (current behavior) ----
@@ -275,28 +278,20 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
             t_plot = t_test[:test_len]
 
             preds_by_model[model_name] = y_pred
-            m = _metrics(y_true, y_pred)
+            m = _metrics(y_true, y_pred, eval_metrics=eval_metrics)
             metrics_by_model[model_name].append(m)
-            log(f"  {model_name} metrics: MAE={m['mae']:.5g} RMSE={m['rmse']:.5g} MAPE%={m['mape_pct']:.5g}")
+            log("  " + _format_metrics_line(model_name, m, eval_metrics))
 
         per_target[target] = {"t": t_plot, "y_true": y_test_true[:test_len], "preds": preds_by_model}
 
     # Aggregate metrics across targets per model
     agg: Dict[str, Dict[str, float]] = {}
     for model_name, ms in metrics_by_model.items():
-        agg[model_name] = {
-            "mae": float(np.mean([m["mae"] for m in ms])) if ms else float("nan"),
-            "rmse": float(np.mean([m["rmse"] for m in ms])) if ms else float("nan"),
-            "mape_pct": float(np.mean([m["mape_pct"] for m in ms])) if ms else float("nan"),
-        }
+        agg[model_name] = _aggregate_metrics(ms, eval_metrics)
 
     train_agg: Dict[str, Dict[str, float]] = {}
     for model_name, ms in train_metrics_by_model.items():
-        train_agg[model_name] = {
-            "mae": float(np.mean([m["mae"] for m in ms])) if ms else float("nan"),
-            "rmse": float(np.mean([m["rmse"] for m in ms])) if ms else float("nan"),
-            "mape_pct": float(np.mean([m["mape_pct"] for m in ms])) if ms else float("nan"),
-        }
+        train_agg[model_name] = _aggregate_metrics(ms, eval_metrics)
 
     run_id = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
     return TrainingResult(
@@ -387,14 +382,48 @@ def _make_scalers(
     return {"y_scaled": y_scaled, "X_scaled": X_scaled, "inv_scale_y": inv_scale_y}
 
 
-def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+def _metrics(y_true: np.ndarray, y_pred: np.ndarray, eval_metrics: List[str]) -> Dict[str, float]:
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
-    mae = float(np.mean(np.abs(y_true - y_pred)))
-    rmse = float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
-    denom = np.maximum(np.abs(y_true), 1e-8)
-    mape = float(np.mean(np.abs((y_true - y_pred) / denom)) * 100.0)
-    return {"mae": mae, "rmse": rmse, "mape_pct": mape}
+    err = y_true - y_pred
+    abs_err = np.abs(err)
+
+    out: Dict[str, float] = {}
+    for m in eval_metrics:
+        if m == "mae":
+            out[m] = float(np.mean(abs_err))
+        elif m == "rmse":
+            out[m] = float(np.sqrt(np.mean(err**2)))
+        elif m == "mse":
+            out[m] = float(np.mean(err**2))
+        elif m == "mape_pct":
+            denom = np.maximum(np.abs(y_true), 1e-8)
+            out[m] = float(np.mean(np.abs(err / denom)) * 100.0)
+        elif m == "max_error":
+            out[m] = float(np.max(abs_err)) if abs_err.size else float("nan")
+        elif m == "min_error":
+            out[m] = float(np.min(abs_err)) if abs_err.size else float("nan")
+        else:
+            raise ValueError(f"Unknown eval metric: {m}")
+    return out
+
+
+def _aggregate_metrics(ms: List[Dict[str, float]], eval_metrics: List[str]) -> Dict[str, float]:
+    if not ms:
+        return {k: float("nan") for k in eval_metrics}
+    out: Dict[str, float] = {}
+    for k in eval_metrics:
+        vals = [m.get(k, float("nan")) for m in ms]
+        out[k] = float(np.nanmean(vals))
+    return out
+
+
+def _format_metrics_line(model_name: str, m: Dict[str, float], eval_metrics: List[str]) -> str:
+    parts = []
+    for k in eval_metrics:
+        v = m.get(k)
+        parts.append(f"{k}={v:.5g}" if isinstance(v, (int, float)) and np.isfinite(v) else f"{k}={v}")
+    return f"{model_name} metrics: " + " ".join(parts)
 
 
 def _fit_predict_model_train_test(
