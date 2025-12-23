@@ -487,17 +487,12 @@ class MainWindow(QMainWindow):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(2000)
-        self.log.setPlaceholderText("Training output will appear here…")
-        left_layout.addWidget(self.log, 1)
-
-        self.gpt_box = QPlainTextEdit()
-        self.gpt_box.setReadOnly(True)
-        self.gpt_box.setMaximumBlockCount(2000)
-        self.gpt_box.setPlaceholderText(
-            "GPT training suggestions will appear here after training.\n"
-            "Set OPENAI_API_KEY in your environment to enable."
+        self.log.setPlaceholderText(
+            "Output will appear here…\n"
+            "- Training log\n"
+            "- GPT training suggestions (if enabled)\n"
         )
-        left_layout.addWidget(self.gpt_box, 1)
+        left_layout.addWidget(self.log, 1)
 
         # Right: visualization
         right = QWidget()
@@ -906,7 +901,6 @@ class MainWindow(QMainWindow):
 
     def _clear_history_and_gpt(self) -> None:
         self.log.clear()
-        self.gpt_box.clear()
         self._reset_gpt_memory()
 
     def _set_openai_key_from_ui(self) -> None:
@@ -919,7 +913,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Key looks too short", "That key looks too short. Please paste the full key.")
             return
         os.environ["OPENAI_API_KEY"] = key
-        self.gpt_box.appendPlainText("OpenAI API key set for this app session (OPENAI_API_KEY).")
+        self._append_log("OpenAI API key set for this app session (OPENAI_API_KEY).")
         QMessageBox.information(self, "Saved", "API key set for this app session.")
 
     def _reset_gpt_memory(self) -> None:
@@ -940,7 +934,7 @@ class MainWindow(QMainWindow):
         if self.last_result is None:
             return
         if OpenAI is None:
-            self.gpt_box.appendPlainText(
+            self._append_log(
                 "GPT advisor unavailable: openai package not installed. Install from requirements.txt."
             )
             return
@@ -949,7 +943,7 @@ class MainWindow(QMainWindow):
         try:
             client = OpenAI()
         except Exception as e:
-            self.gpt_box.appendPlainText(
+            self._append_log(
                 "GPT advisor not enabled. Set OPENAI_API_KEY (you can paste it in the UI).\n"
                 f"Details: {e}"
             )
@@ -979,7 +973,7 @@ class MainWindow(QMainWindow):
             "Include which model(s) to prefer, which to drop, and specific hyperparameter changes."
         )
 
-        self.gpt_box.appendPlainText("\n--- GPT advisor: requesting suggestions… ---\n")
+        self._append_log("\n--- GPT advisor: requesting suggestions… ---\n")
         try:
             messages = list(self._gpt_messages) + [{"role": "user", "content": user_msg}]
             resp = client.chat.completions.create(
@@ -989,12 +983,12 @@ class MainWindow(QMainWindow):
             )
             text = resp.choices[0].message.content or ""
         except Exception as e:
-            self.gpt_box.appendPlainText(f"GPT request failed: {e}\n\n{traceback.format_exc()}")
+            self._append_log(f"GPT request failed: {e}\n\n{traceback.format_exc()}")
             return
 
         self._gpt_messages.append({"role": "user", "content": user_msg})
         self._gpt_messages.append({"role": "assistant", "content": text})
-        self.gpt_box.appendPlainText(text.strip() + "\n")
+        self._append_log(text.strip() + "\n")
 
     def _populate_visualization_controls(self) -> None:
         self.target_view_combo.blockSignals(True)
