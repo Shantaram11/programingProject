@@ -58,6 +58,8 @@ class TrainingResult:
     per_target: Dict[str, Dict[str, Any]]
     # metrics_by_model[model] = aggregated across targets
     metrics_by_model: Dict[str, Dict[str, float]]
+    # train_metrics_by_model[model] = aggregated across targets (in-sample / training window)
+    train_metrics_by_model: Dict[str, Dict[str, float]]
 
 
 def load_dataset(path: str) -> pd.DataFrame:
@@ -196,6 +198,7 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
     per_target: Dict[str, Dict[str, Any]] = {}
     models_enabled = list(cfg.models.keys())
     metrics_by_model: Dict[str, List[Dict[str, float]]] = {m: [] for m in models_enabled}
+    train_metrics_by_model: Dict[str, List[Dict[str, float]]] = {m: [] for m in models_enabled}
 
     for target in feat.targets:
         log(f"--- Target: {target} ---")
@@ -216,6 +219,7 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
 
         y_train_t = y_t[:split_idx]  # transformed only
         y_train_scaled = y_scaled[:split_idx]  # transformed + scaled
+        y_train_true = y_raw[:split_idx]  # original scale for train overfit checks
         y_test_true = y_raw[split_idx:]  # original scale for metrics/plot
         t_test = t_all[split_idx:]
 
@@ -230,7 +234,7 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
             log(f"Training model: {model_name}")
             use_scaling = model_name in {"xgboost", "deepar"}
             y_train_model = y_train_scaled if use_scaling else y_train_t
-            y_pred_model = _fit_predict_model(
+            y_pred_train_model, y_pred_test_model = _fit_predict_model_train_test(
                 model_name=model_name,
                 mc=mc,
                 y_train=y_train_model,
@@ -246,10 +250,24 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
                 log=log,
             )
 
-            # Inverse scale (only for ML/Deep), then inverse transform to get back to original scale
-            y_pred_t = inv_scale_y(y_pred_model) if use_scaling else np.asarray(y_pred_model, dtype=float)
-            y_pred = inv_transform(y_pred_t)
-            y_pred = np.asarray(y_pred, dtype=float)
+            # ---- Train metrics (in-sample) ----
+            if y_pred_train_model is not None:
+                y_pred_train_t = (
+                    inv_scale_y(y_pred_train_model) if use_scaling else np.asarray(y_pred_train_model, dtype=float)
+                )
+                y_pred_train = np.asarray(inv_transform(y_pred_train_t), dtype=float)
+
+                # Align train predictions (some models start after lag_window)
+                y_true_train = np.asarray(y_train_true, dtype=float)
+                if len(y_pred_train) != len(y_true_train):
+                    # assume the predictions correspond to the tail of train
+                    y_true_train = y_true_train[-len(y_pred_train) :]
+                mtr = _metrics(y_true_train, y_pred_train)
+                train_metrics_by_model[model_name].append(mtr)
+
+            # ---- Test metrics (current behavior) ----
+            y_pred_t = inv_scale_y(y_pred_test_model) if use_scaling else np.asarray(y_pred_test_model, dtype=float)
+            y_pred = np.asarray(inv_transform(y_pred_t), dtype=float)
 
             # Align lengths
             y_pred = y_pred[:test_len]
@@ -272,6 +290,14 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
             "mape_pct": float(np.mean([m["mape_pct"] for m in ms])) if ms else float("nan"),
         }
 
+    train_agg: Dict[str, Dict[str, float]] = {}
+    for model_name, ms in train_metrics_by_model.items():
+        train_agg[model_name] = {
+            "mae": float(np.mean([m["mae"] for m in ms])) if ms else float("nan"),
+            "rmse": float(np.mean([m["rmse"] for m in ms])) if ms else float("nan"),
+            "mape_pct": float(np.mean([m["mape_pct"] for m in ms])) if ms else float("nan"),
+        }
+
     run_id = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
     return TrainingResult(
         run_id=run_id,
@@ -280,6 +306,7 @@ def run_training(df: pd.DataFrame, cfg: PipelineConfig, log_cb: LogCb = None) ->
         models=models_enabled,
         per_target=per_target,
         metrics_by_model=agg,
+        train_metrics_by_model=train_agg,
     )
 
 
@@ -370,7 +397,7 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     return {"mae": mae, "rmse": rmse, "mape_pct": mape}
 
 
-def _fit_predict_model(
+def _fit_predict_model_train_test(
     model_name: str,
     mc: ModelConfig,
     y_train: np.ndarray,
@@ -384,21 +411,25 @@ def _fit_predict_model(
     t_train: np.ndarray,
     t_future: np.ndarray,
     log: Callable[[str], None],
-) -> np.ndarray:
+) -> Tuple[Optional[np.ndarray], np.ndarray]:
     y_train = np.asarray(y_train, dtype=float)
 
     if model_name == "ma":
         window = int(mc.params.get("window", 24))
-        return _predict_ma(y_train, horizon=horizon, window=window)
+        ytr = _predict_ma_train(y_train, window=window)
+        yte = _predict_ma(y_train, horizon=horizon, window=window)
+        return ytr, yte
     if model_name == "wma":
         window = int(mc.params.get("window", 24))
         weights = str(mc.params.get("weights", "linear_recent_heavier"))
-        return _predict_wma(y_train, horizon=horizon, window=window, weights=weights)
+        ytr = _predict_wma_train(y_train, window=window, weights=weights)
+        yte = _predict_wma(y_train, horizon=horizon, window=window, weights=weights)
+        return ytr, yte
     if model_name == "arima":
         ok, msg = AvailableModels.detect().status_for("arima")
         if not ok:
             raise RuntimeError(f"ARIMA requires missing dependency: {msg}")
-        return _predict_arima(
+        return _predict_arima_train_test(
             y_train_t=y_train,
             horizon=horizon,
             p=int(mc.params.get("p", 2)),
@@ -411,7 +442,7 @@ def _fit_predict_model(
         ok, msg = AvailableModels.detect().status_for("prophet")
         if not ok:
             raise RuntimeError(f"Prophet requires missing dependency: {msg}")
-        return _predict_prophet(
+        return _predict_prophet_train_test(
             t_train=t_train,
             y_train_t=y_train,
             t_future=t_future,
@@ -425,7 +456,7 @@ def _fit_predict_model(
         ok, msg = AvailableModels.detect().status_for("xgboost")
         if not ok:
             raise RuntimeError(f"XGBoost requires missing dependency: {msg}")
-        return _predict_xgboost(
+        return _predict_xgboost_train_test(
             y_train=y_train,
             X_train=X_train,
             X_future=X_future,
@@ -437,7 +468,7 @@ def _fit_predict_model(
         ok, msg = AvailableModels.detect().status_for("deepar")
         if not ok:
             raise RuntimeError(f"DeepAR requires missing dependency: {msg}")
-        return _predict_deepar_torch(
+        return _predict_deepar_torch_train_test(
             y_train=y_train,
             X_train=X_train,
             X_future=X_future,
@@ -458,6 +489,18 @@ def _predict_ma(y_train: np.ndarray, horizon: int, window: int) -> np.ndarray:
         w = history[-window:] if len(history) >= window else history
         preds.append(float(np.mean(w)))
         history.append(preds[-1])
+    return np.asarray(preds, dtype=float)
+
+
+def _predict_ma_train(y_train: np.ndarray, window: int) -> np.ndarray:
+    """One-step-ahead in-sample predictions on training window (starts after window)."""
+    window = max(1, int(window))
+    y = np.asarray(y_train, dtype=float)
+    if len(y) <= window:
+        return np.asarray([], dtype=float)
+    preds: List[float] = []
+    for i in range(window, len(y)):
+        preds.append(float(np.mean(y[i - window : i])))
     return np.asarray(preds, dtype=float)
 
 
@@ -485,7 +528,30 @@ def _predict_wma(y_train: np.ndarray, horizon: int, window: int, weights: str) -
     return np.asarray(preds, dtype=float)
 
 
-def _predict_arima(
+def _predict_wma_train(y_train: np.ndarray, window: int, weights: str) -> np.ndarray:
+    window = max(1, int(window))
+    y = np.asarray(y_train, dtype=float)
+    if len(y) <= window:
+        return np.asarray([], dtype=float)
+    preds: List[float] = []
+    for i in range(window, len(y)):
+        w = y[i - window : i]
+        n = len(w)
+        if n == 1:
+            preds.append(float(w[0]))
+            continue
+        if weights == "linear_recent_heavier":
+            ws = np.arange(1, n + 1, dtype=float)
+        elif weights == "linear_older_heavier":
+            ws = np.arange(n, 0, -1, dtype=float)
+        else:
+            ws = np.ones(n, dtype=float)
+        ws = ws / ws.sum()
+        preds.append(float(np.dot(ws, w.astype(float))))
+    return np.asarray(preds, dtype=float)
+
+
+def _predict_arima_train_test(
     y_train_t: np.ndarray,
     horizon: int,
     p: int,
@@ -493,19 +559,23 @@ def _predict_arima(
     q: int,
     X_train_raw: Optional[np.ndarray],
     X_future_raw: Optional[np.ndarray],
-) -> np.ndarray:
+) -> Tuple[Optional[np.ndarray], np.ndarray]:
     from statsmodels.tsa.arima.model import ARIMA
 
     y = np.asarray(y_train_t, dtype=float)
     exog = np.asarray(X_train_raw, dtype=float) if X_train_raw is not None else None
     model = ARIMA(y, order=(p, d, q), exog=exog)
     fit = model.fit()
+    try:
+        train_pred = np.asarray(fit.predict(start=0, end=len(y) - 1, exog=exog), dtype=float)
+    except Exception:
+        train_pred = None
     exog_future = np.asarray(X_future_raw, dtype=float) if X_future_raw is not None else None
     fc = fit.forecast(steps=int(horizon), exog=exog_future)
-    return np.asarray(fc, dtype=float)
+    return train_pred, np.asarray(fc, dtype=float)
 
 
-def _predict_prophet(
+def _predict_prophet_train_test(
     t_train: np.ndarray,
     y_train_t: np.ndarray,
     t_future: np.ndarray,
@@ -514,7 +584,7 @@ def _predict_prophet(
     X_future_raw: Optional[np.ndarray],
     feat_names: List[str],
     params: Dict[str, Any],
-) -> np.ndarray:
+) -> Tuple[Optional[np.ndarray], np.ndarray]:
     try:
         from prophet import Prophet
     except Exception as e:
@@ -545,12 +615,17 @@ def _predict_prophet(
 
     m.fit(train)
 
+    # In-sample predictions
+    train_fc = m.predict(train)
+    train_pred = np.asarray(train_fc["yhat"].to_numpy(), dtype=float)
+
     future = pd.DataFrame({"ds": pd.to_datetime(t_future[: int(horizon)])})
     if X_future_raw is not None and feat_names:
         for i, name in enumerate(feat_names):
             future[name] = np.asarray(X_future_raw[: int(horizon), i], dtype=float)
     forecast = m.predict(future)
-    return np.asarray(forecast["yhat"].to_numpy(), dtype=float)
+    test_pred = np.asarray(forecast["yhat"].to_numpy(), dtype=float)
+    return train_pred, test_pred
 
 
 def _build_supervised(
@@ -611,7 +686,46 @@ def _predict_xgboost(
     return np.asarray(preds, dtype=float)
 
 
-def _predict_deepar_torch(
+def _predict_xgboost_train_test(
+    y_train: np.ndarray,
+    X_train: Optional[np.ndarray],
+    X_future: Optional[np.ndarray],
+    horizon: int,
+    lag_window: int,
+    params: Dict[str, Any],
+) -> Tuple[Optional[np.ndarray], np.ndarray]:
+    from xgboost import XGBRegressor
+
+    Xs, ys = _build_supervised(y_train, X_train, lag_window=lag_window)
+    model = XGBRegressor(
+        max_depth=int(params.get("max_depth", 6)),
+        learning_rate=float(params.get("learning_rate", 0.05)),
+        n_estimators=int(params.get("n_estimators", 600)),
+        subsample=float(params.get("subsample", 0.9)),
+        colsample_bytree=float(params.get("colsample_bytree", 0.9)),
+        objective="reg:squarederror",
+        n_jobs=0,
+        random_state=42,
+    )
+    model.fit(Xs, ys)
+    train_pred = np.asarray(model.predict(Xs), dtype=float)
+
+    history = list(np.asarray(y_train, dtype=float))
+    preds: List[float] = []
+    for i in range(int(horizon)):
+        lags = np.asarray(history[-lag_window:][::-1], dtype=float)
+        if X_future is not None:
+            ex = np.asarray(X_future[i], dtype=float)
+            feat = np.concatenate([lags, ex], axis=0)
+        else:
+            feat = lags
+        pred = float(model.predict(feat.reshape(1, -1))[0])
+        preds.append(pred)
+        history.append(pred)
+    return train_pred, np.asarray(preds, dtype=float)
+
+
+def _predict_deepar_torch_train_test(
     y_train: np.ndarray,
     X_train: Optional[np.ndarray],
     X_future: Optional[np.ndarray],
@@ -619,7 +733,7 @@ def _predict_deepar_torch(
     lag_window: int,
     params: Dict[str, Any],
     log: Callable[[str], None],
-) -> np.ndarray:
+) -> Tuple[Optional[np.ndarray], np.ndarray]:
     import torch
     import torch.nn as nn
 
@@ -712,6 +826,10 @@ def _predict_deepar_torch(
 
     # Forecast autoregressively
     model.eval()
+    # In-sample one-step predictions on training windows
+    with torch.no_grad():
+        train_pred = model(Xw).detach().cpu().numpy().astype(float)
+
     history_y = list(np.asarray(y, dtype=float))
     preds: List[float] = []
     Xf = np.asarray(X_future, dtype=float) if X_future is not None else None
@@ -732,5 +850,5 @@ def _predict_deepar_torch(
             pred = float(model(xb).cpu().numpy().reshape(-1)[0])
             preds.append(pred)
             history_y.append(pred)
-    return np.asarray(preds, dtype=float)
+    return np.asarray(train_pred, dtype=float), np.asarray(preds, dtype=float)
 

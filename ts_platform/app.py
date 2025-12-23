@@ -1039,14 +1039,26 @@ class MainWindow(QMainWindow):
 
         cfg = self.last_result.config
         metrics = self.last_result.metrics_by_model
+        train_metrics = getattr(self.last_result, "train_metrics_by_model", {}) or {}
 
         model_lines = []
+        overfit_lines = []
         for m in self.last_result.models:
             label = MODEL_LABELS.get(m, m)
             mm = metrics.get(m, {})
+            tm = train_metrics.get(m, {})
             model_lines.append(
-                f"- {label}: MAE={mm.get('mae')}, RMSE={mm.get('rmse')}, MAPE%={mm.get('mape_pct')}"
+                f"- {label}: "
+                f"TRAIN(RMSE={tm.get('rmse')}, MAE={tm.get('mae')}, MAPE%={tm.get('mape_pct')}) | "
+                f"TEST(RMSE={mm.get('rmse')}, MAE={mm.get('mae')}, MAPE%={mm.get('mape_pct')})"
             )
+            try:
+                tr = float(tm.get("rmse")) if tm.get("rmse") is not None else None
+                te = float(mm.get("rmse")) if mm.get("rmse") is not None else None
+                if tr and te and tr > 0:
+                    overfit_lines.append(f"- {label}: test/train RMSE ratio ≈ {te / tr:.3g}")
+            except Exception:
+                pass
 
         # Pre-select best model (lowest RMSE, then MAE) to constrain the advisor.
         def _score(m: str) -> tuple[float, float]:
@@ -1099,15 +1111,19 @@ class MainWindow(QMainWindow):
             "- Do NOT mention methods we do not provide (e.g., z-score outlier removal, isolation forest, etc.).\n"
             "- If you suggest a cleaning change, the new value MUST be one of the allowed options.\n"
             "- Hyperparameter changes MUST stay within the provided ranges.\n"
-            "- You must choose exactly ONE best model among the models trained in this run (no new models).\n\n"
+            "- You must choose exactly ONE best model among the models trained in this run (no new models).\n"
+            "- You MUST check for overfitting using TRAIN vs TEST metrics. If overfitting is likely, suggest concrete regularization changes.\n\n"
             f"Best-by-metrics hint (computed): {best_model_label} (key={best_model_key}).\n\n"
             f"Targets: {self.last_result.targets}\n"
             f"Models trained (keys): {self.last_result.models}\n"
             f"Models trained (labels): {[MODEL_LABELS.get(m, m) for m in self.last_result.models]}\n\n"
             "Current settings (JSON):\n"
             f"{json.dumps(cfg, indent=2, ensure_ascii=False)}\n\n"
-            "Aggregated metrics (lower is better):\n"
+            "Aggregated metrics (lower is better). TRAIN is in-sample; TEST is held-out:\n"
             + "\n".join(model_lines)
+            + "\n\n"
+            "Overfitting signal (test/train RMSE ratio; >1.5 is suspicious):\n"
+            + ("\n".join(overfit_lines) if overfit_lines else "- (not available)")
             + "\n\n"
             "Allowed cleaning options (MUST use these exact codes):\n"
             f"{json.dumps(allowed_cleaning, indent=2, ensure_ascii=False)}\n\n"
@@ -1119,7 +1135,8 @@ class MainWindow(QMainWindow):
             "- Cleaning: <setting>: <old> -> <new>\n"
             "- Hyperparameters: <MODEL_KEY>.<param>: <old> -> <new>\n"
             "- Data split/horizon/lags: <setting>: <old> -> <new>\n"
-            "3) One-sentence rationale.\n"
+            "3) Overfitting check: <yes/no> and why (reference the train/test numbers).\n"
+            "4) One-sentence rationale.\n"
         )
 
         self._append_log("\n--- GPT advisor: requesting suggestions… ---\n")

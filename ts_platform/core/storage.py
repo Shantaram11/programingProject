@@ -60,6 +60,7 @@ class RunStore:
             "targets": result.targets,
             "models": result.models,
             "metrics_by_model": result.metrics_by_model,
+            "train_metrics_by_model": getattr(result, "train_metrics_by_model", {}),
             "config": result.config,
         }
         (run_dir / "info.json").write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
