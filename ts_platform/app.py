@@ -5,6 +5,7 @@ import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import os
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1427,6 +1428,12 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    # Prophet may emit a noisy error at import time if optional plotly isn't installed:
+    # "Importing plotly failed. Interactive plots will not work."
+    # We don't use Prophet's plotly integration in this app, so silence it.
+    logging.getLogger("prophet.plot").setLevel(logging.CRITICAL)
+    logging.getLogger("prophet.plot").propagate = False
+
     app = QApplication(sys.argv)
     apply_stylesheet(app, theme="dark_teal.xml")
     # Larger, more readable default font and components.
