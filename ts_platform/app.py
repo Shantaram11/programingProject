@@ -54,8 +54,21 @@ from ts_platform.core.pipeline import (
 )
 from ts_platform.core.storage import RunStore
 
+try:
+    from openai import OpenAI
+except Exception:  # optional at runtime if user didn't install deps
+    OpenAI = None  # type: ignore[assignment]
 
 APP_NAME = "Time-Series Model Training Platform"
+
+MODEL_LABELS: Dict[str, str] = {
+    "ma": "MA (Moving Average)",
+    "wma": "WMA (Weighted Moving Average)",
+    "arima": "ARIMA (AutoRegressive Integrated Moving Average)",
+    "prophet": "PROPHET (Facebook/Meta Prophet)",
+    "xgboost": "XGB (Extreme Gradient Boosting / XGBoost)",
+    "deepar": "DeepAR (Deep Autoregressive Recurrent Network)",
+}
 
 
 def _now_run_id() -> str:
@@ -157,6 +170,8 @@ class MainWindow(QMainWindow):
         self.df: Optional[pd.DataFrame] = None
         self.df_path: Optional[str] = None
         self.last_result: Optional[TrainingResult] = None
+        self._gpt_messages: List[Dict[str, str]] = []
+        self._reset_gpt_memory()
 
         self._build_ui()
         self._refresh_saved_runs()
@@ -333,7 +348,12 @@ class MainWindow(QMainWindow):
         self.targets_checks.set_items([])
         self.features_checks.set_items([])
 
-        cols = list(self.df.columns)
+        # Ignore common "Unnamed: 0" index columns and blank column names.
+        cols = [
+            c
+            for c in list(self.df.columns)
+            if str(c).strip() != "" and not str(c).strip().lower().startswith("unnamed")
+        ]
         self.time_col_combo.addItems([str(c) for c in cols])
 
         numeric_cols = [c for c in cols if pd.api.types.is_numeric_dtype(self.df[c])]
@@ -443,11 +463,28 @@ class MainWindow(QMainWindow):
         btn_save.clicked.connect(self._save_last_result)
         actions.addWidget(btn_save)
 
-        # Progress box
+        # Logs + GPT suggestions + clear button
+        out_toolbar = QHBoxLayout()
+        left_layout.addLayout(out_toolbar)
+        btn_clear_hist = QPushButton("Clear history (logs + GPT)")
+        btn_clear_hist.clicked.connect(self._clear_history_and_gpt)
+        out_toolbar.addWidget(btn_clear_hist)
+        out_toolbar.addStretch(1)
+
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(2000)
+        self.log.setPlaceholderText("Training output will appear here…")
         left_layout.addWidget(self.log, 1)
+
+        self.gpt_box = QPlainTextEdit()
+        self.gpt_box.setReadOnly(True)
+        self.gpt_box.setMaximumBlockCount(2000)
+        self.gpt_box.setPlaceholderText(
+            "GPT training suggestions will appear here after training.\n"
+            "Set OPENAI_API_KEY in your environment to enable."
+        )
+        left_layout.addWidget(self.gpt_box, 1)
 
         # Right: visualization
         right = QWidget()
@@ -467,6 +504,13 @@ class MainWindow(QMainWindow):
         self.model_lines_layout = QVBoxLayout()
         self.model_lines_box.setLayout(self.model_lines_layout)
         right_layout.addWidget(self.model_lines_box)
+
+        fig_toolbar = QHBoxLayout()
+        btn_save_fig = QPushButton("Save plot…")
+        btn_save_fig.clicked.connect(self._save_current_plot)
+        fig_toolbar.addWidget(btn_save_fig)
+        fig_toolbar.addStretch(1)
+        right_layout.addLayout(fig_toolbar)
 
         self.canvas = MplCanvas()
         right_layout.addWidget(self.canvas, 1)
@@ -495,7 +539,7 @@ class MainWindow(QMainWindow):
         return box
 
     def _add_model_group_ma(self) -> None:
-        self._add_model_group_common("MA (Moving Average)", "ma", enabled_default=True)
+        self._add_model_group_common(MODEL_LABELS["ma"], "ma", enabled_default=True)
         form: QFormLayout = self.model_widgets["ma"]["form"]
 
         w = NoWheelSpinBox()
@@ -506,7 +550,7 @@ class MainWindow(QMainWindow):
         self.model_widgets["ma"]["window"] = w
 
     def _add_model_group_wma(self) -> None:
-        self._add_model_group_common("WMA (Weighted Moving Average)", "wma", enabled_default=False)
+        self._add_model_group_common(MODEL_LABELS["wma"], "wma", enabled_default=False)
         form: QFormLayout = self.model_widgets["wma"]["form"]
 
         w = NoWheelSpinBox()
@@ -524,7 +568,7 @@ class MainWindow(QMainWindow):
         self.model_widgets["wma"]["weights"] = scheme
 
     def _add_model_group_arima(self) -> None:
-        self._add_model_group_common("ARIMA (statsmodels)", "arima", enabled_default=False)
+        self._add_model_group_common(MODEL_LABELS["arima"], "arima", enabled_default=False)
         form: QFormLayout = self.model_widgets["arima"]["form"]
 
         p = NoWheelSpinBox()
@@ -563,7 +607,7 @@ class MainWindow(QMainWindow):
         self.model_widgets["arima"]["use_exog"] = use_exog
 
     def _add_model_group_prophet(self) -> None:
-        self._add_model_group_common("Prophet (Meta)", "prophet", enabled_default=False)
+        self._add_model_group_common(MODEL_LABELS["prophet"], "prophet", enabled_default=False)
         form: QFormLayout = self.model_widgets["prophet"]["form"]
 
         cp = NoWheelDoubleSpinBox()
@@ -605,7 +649,7 @@ class MainWindow(QMainWindow):
         self.model_widgets["prophet"]["use_regs"] = use_regs
 
     def _add_model_group_xgb(self) -> None:
-        self._add_model_group_common("XGBoost (lag features)", "xgboost", enabled_default=True)
+        self._add_model_group_common(MODEL_LABELS["xgboost"], "xgboost", enabled_default=True)
         form: QFormLayout = self.model_widgets["xgboost"]["form"]
 
         depth = NoWheelSpinBox()
@@ -650,7 +694,7 @@ class MainWindow(QMainWindow):
         self.model_widgets["xgboost"]["colsample_bytree"] = colsample
 
     def _add_model_group_deepar(self) -> None:
-        self._add_model_group_common("DeepAR (PyTorch, lightweight)", "deepar", enabled_default=False)
+        self._add_model_group_common(MODEL_LABELS["deepar"], "deepar", enabled_default=False)
         form: QFormLayout = self.model_widgets["deepar"]["form"]
 
         hidden = NoWheelSpinBox()
@@ -820,12 +864,111 @@ class MainWindow(QMainWindow):
         self._populate_visualization_controls()
         self._redraw_plot()
         self._populate_metrics_table()
+        self._maybe_get_gpt_suggestions()
 
         QMessageBox.information(
             self,
             "Done",
             f"Training completed for {len(result.models)} model(s) and {len(result.targets)} target(s).",
         )
+
+    def _save_current_plot(self) -> None:
+        if self.last_result is None:
+            QMessageBox.information(self, "No plot", "Train at least one model first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save plot",
+            str(Path.home() / f"ts_plot_{self.last_result.run_id}.png"),
+            "PNG (*.png);;PDF (*.pdf);;SVG (*.svg);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            self.canvas.figure.savefig(path, dpi=200)
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", f"{e}\n\n{traceback.format_exc()}")
+            return
+        QMessageBox.information(self, "Saved", f"Saved plot to:\n{path}")
+
+    def _clear_history_and_gpt(self) -> None:
+        self.log.clear()
+        self.gpt_box.clear()
+        self._reset_gpt_memory()
+
+    def _reset_gpt_memory(self) -> None:
+        self._gpt_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior time-series ML engineer. "
+                    "Given the user's current training settings and evaluation results, "
+                    "suggest concrete improvements: which models to use/remove, "
+                    "how to adjust hyperparameters, and which missing-value/outlier/scaling choices to try. "
+                    "Be practical and concise. Provide 5-10 bullet points max."
+                ),
+            }
+        ]
+
+    def _maybe_get_gpt_suggestions(self) -> None:
+        if self.last_result is None:
+            return
+        if OpenAI is None:
+            self.gpt_box.appendPlainText(
+                "GPT advisor unavailable: openai package not installed. Install from requirements.txt."
+            )
+            return
+
+        # OpenAI SDK reads OPENAI_API_KEY from environment.
+        try:
+            client = OpenAI()
+        except Exception as e:
+            self.gpt_box.appendPlainText(
+                "GPT advisor not enabled. Set OPENAI_API_KEY in your environment.\n"
+                f"Details: {e}"
+            )
+            return
+
+        cfg = self.last_result.config
+        metrics = self.last_result.metrics_by_model
+
+        model_lines = []
+        for m in self.last_result.models:
+            label = MODEL_LABELS.get(m, m)
+            mm = metrics.get(m, {})
+            model_lines.append(
+                f"- {label}: MAE={mm.get('mae')}, RMSE={mm.get('rmse')}, MAPE%={mm.get('mape_pct')}"
+            )
+
+        user_msg = (
+            "Here is the latest time-series training run.\n\n"
+            f"Targets: {self.last_result.targets}\n"
+            f"Models trained: {[MODEL_LABELS.get(m, m) for m in self.last_result.models]}\n\n"
+            "Cleaning/settings:\n"
+            f"{json.dumps(cfg, indent=2, ensure_ascii=False)}\n\n"
+            "Aggregated metrics:\n"
+            + "\n".join(model_lines)
+            + "\n\n"
+            "Give suggestions to improve performance and reliability. "
+            "Include which model(s) to prefer, which to drop, and specific hyperparameter changes."
+        )
+
+        self.gpt_box.appendPlainText("\n--- GPT advisor: requesting suggestions… ---\n")
+        try:
+            messages = list(self._gpt_messages) + [{"role": "user", "content": user_msg}]
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.2,
+            )
+            text = resp.choices[0].message.content or ""
+        except Exception as e:
+            self.gpt_box.appendPlainText(f"GPT request failed: {e}\n\n{traceback.format_exc()}")
+            return
+
+        self._gpt_messages.append({"role": "user", "content": user_msg})
+        self._gpt_messages.append({"role": "assistant", "content": text})
+        self.gpt_box.appendPlainText(text.strip() + "\n")
 
     def _populate_visualization_controls(self) -> None:
         self.target_view_combo.blockSignals(True)
@@ -846,7 +989,7 @@ class MainWindow(QMainWindow):
 
         self._line_toggles: Dict[str, QCheckBox] = {}
         for model_name in self.last_result.models:
-            chk = QCheckBox(model_name)
+            chk = QCheckBox(MODEL_LABELS.get(model_name, model_name))
             chk.setChecked(True)
             chk.stateChanged.connect(self._redraw_plot)
             self.model_lines_layout.addWidget(chk)
@@ -875,7 +1018,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "_line_toggles"):
                 if model_name in self._line_toggles and not self._line_toggles[model_name].isChecked():
                     continue
-            self.canvas.ax.plot(t, pred, label=model_name, linewidth=1.8, alpha=0.9)
+            self.canvas.ax.plot(t, pred, label=MODEL_LABELS.get(model_name, model_name), linewidth=1.8, alpha=0.9)
 
         self.canvas.ax.set_title(f"Forecast on test window (target: {target})")
         self.canvas.ax.set_xlabel("Time")
@@ -895,7 +1038,7 @@ class MainWindow(QMainWindow):
         self.metrics_table.setRowCount(len(models))
         self.metrics_table.setColumnCount(len(cols))
         self.metrics_table.setHorizontalHeaderLabels(cols)
-        self.metrics_table.setVerticalHeaderLabels(models)
+        self.metrics_table.setVerticalHeaderLabels([MODEL_LABELS.get(m, m) for m in models])
 
         for r, model_name in enumerate(models):
             m = self.last_result.metrics_by_model[model_name]

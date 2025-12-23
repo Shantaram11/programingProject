@@ -64,12 +64,30 @@ def load_dataset(path: str) -> pd.DataFrame:
     p = str(path)
     lower = p.lower()
     if lower.endswith(".csv"):
-        return pd.read_csv(p)
+        df = pd.read_csv(p)
+        return _drop_unnamed_columns(df)
     if lower.endswith(".parquet"):
-        return pd.read_parquet(p)
+        df = pd.read_parquet(p)
+        return _drop_unnamed_columns(df)
     if lower.endswith(".xlsx") or lower.endswith(".xls"):
-        return pd.read_excel(p)
+        df = pd.read_excel(p)
+        return _drop_unnamed_columns(df)
     raise ValueError(f"Unsupported file type: {path} (supported: csv/xlsx/xls/parquet)")
+
+
+def _drop_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
+    # Common when saving CSV with an index column: "Unnamed: 0"
+    cols = [str(c) for c in df.columns]
+    mask = []
+    for c in cols:
+        s = c.strip()
+        if s == "":
+            mask.append(False)
+        elif s.lower().startswith("unnamed"):
+            mask.append(False)
+        else:
+            mask.append(True)
+    return df.loc[:, mask]
 
 
 class AvailableModels:
