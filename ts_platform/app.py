@@ -45,7 +45,7 @@ from PyQt5.QtWidgets import (
 )
 from qt_material import apply_stylesheet
 
-from ts_platform.core.pipeline import (
+from core.pipeline import (
     AvailableModels,
     CleaningConfig,
     FeatureConfig,
@@ -55,7 +55,7 @@ from ts_platform.core.pipeline import (
     load_dataset,
     run_training,
 )
-from ts_platform.core.storage import RunStore
+from core.storage import RunStore
 
 try:
     from openai import OpenAI
@@ -69,32 +69,32 @@ MODEL_LABELS: Dict[str, str] = {
     "wma": "WMA (Weighted Moving Average)",
     "arima": "ARIMA (AutoRegressive Integrated Moving Average)",
     "prophet": "PROPHET (Facebook/Meta Prophet)",
-    "xgboost": "XGB (Extreme Gradient Boosting / XGBoost)",
+    "xgboost": "XGBoost",
     "deepar": "DeepAR (Deep Autoregressive Recurrent Network)",
 }
 
 MISSING_METHOD_ITEMS: List[tuple[str, str]] = [
-    ("none (No autofill)", "none"),
-    ("drop_rows (Drop rows with missing values)", "drop_rows"),
-    ("ffill (Forward fill)", "ffill"),
-    ("bfill (Backward fill)", "bfill"),
-    ("interpolate_linear (Linear interpolation)", "interpolate_linear"),
+    ("No autofill", "none"),
+    ("Drop rows with missing values", "drop_rows"),
+    ("Forward fill", "ffill"),
+    ("Backward fill", "bfill"),
+    ("Linear interpolation", "interpolate_linear"),
 ]
 
 OUTLIER_METHOD_ITEMS: List[tuple[str, str]] = [
-    ("none (No outlier handling)", "none"),
-    ("clip_quantile (Quantile clipping)", "clip_quantile"),
+    ("No outlier handling", "none"),
+    ("Quantile clipping", "clip_quantile"),
 ]
 
 SCALER_ITEMS: List[tuple[str, str]] = [
-    ("none (No scaling)", "none"),
-    ("standard (StandardScaler / z-score scaling)", "standard"),
-    ("minmax (MinMaxScaler)", "minmax"),
+    ("No scaling", "none"),
+    ("StandardScaler", "standard"),
+    ("MinMaxScaler", "minmax"),
 ]
 
 TARGET_TRANSFORM_ITEMS: List[tuple[str, str]] = [
-    ("none (No transform)", "none"),
-    ("log1p (log(1+x))", "log1p"),
+    ("No transform", "none"),
+    ("llog(1+x)", "log1p"),
 ]
 
 
@@ -241,11 +241,11 @@ class MainWindow(QMainWindow):
         layout.addLayout(top)
 
         self.file_path_edit = QLineEdit()
-        self.file_path_edit.setPlaceholderText("Choose a CSV / Excel / Parquet file ...")
+        self.file_path_edit.setPlaceholderText("Choose a CSV file")
         self.file_path_edit.setReadOnly(True)
         top.addWidget(self.file_path_edit, 1)
 
-        btn_pick = QPushButton("Upload data (from PC)…")
+        btn_pick = QPushButton("Upload data")
         btn_pick.clicked.connect(self._pick_file)
         top.addWidget(btn_pick)
 
@@ -301,7 +301,7 @@ class MainWindow(QMainWindow):
         self.features_checks.setToolTip("Optional feature columns. Default: all numeric (excluding targets).")
         form.addRow(QLabel("Features (multi-select)"), self.features_checks)
 
-        group2 = QGroupBox("Train/Test & Horizon")
+        group2 = QGroupBox("Train/Test")
         form2 = QFormLayout()
         group2.setLayout(form2)
         right_layout.addWidget(group2)
@@ -326,8 +326,7 @@ class MainWindow(QMainWindow):
         form2.addRow(QLabel("Lag window"), self.lag_window)
 
         hint = QLabel(
-            "Tip: Load data → choose time column → select targets/features. "
-            "Then go to 'Cleaning & Features' and 'Models'."
+            ""
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("opacity: 0.9;")
@@ -400,7 +399,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         self.tab_clean.setLayout(layout)
 
-        group = QGroupBox("Data Cleaning (defaults + allowed ranges shown in tooltips)")
+        group = QGroupBox("Data Cleaning")
         form = QFormLayout()
         group.setLayout(form)
         layout.addWidget(group)
@@ -1429,7 +1428,7 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
-    apply_stylesheet(app, theme="light_blue.xml")
+    apply_stylesheet(app, theme="dark_teal.xml")
     # Larger, more readable default font and components.
     base_font = QFont()
     base_font.setPointSize(12)
